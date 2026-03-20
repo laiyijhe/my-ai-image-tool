@@ -1,0 +1,10 @@
+{
+    "manifest_version": 3,
+    "name": "AI 圖片修復助手",
+    "version": "1.0",
+    "description": "按右鍵即可高清修復任何網頁圖片",
+    "permissions": ["contextMenus", "tabs"],
+    "background": {
+      "service_worker": "background.js"
+    }
+  }
