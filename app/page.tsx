@@ -52,7 +52,7 @@ function UpscaleContent() {
 
   return (
     <div className="flex flex-col items-center p-10 font-sans min-h-screen bg-gray-50">
-      <h1 className="text-2xl font-bold mb-8 text-blue-800">AI 圖片高清修復 (正式版)</h1>
+      <h1 className="text-2xl font-bold mb-8 text-blue-800">AI 圖片高清修復 (超級無敵版)</h1>
       {imgUrl && (
         <div className="flex flex-col items-center gap-8 w-full max-w-4xl">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-8 w-full">
