@@ -1,0 +1,7 @@
+### 測試 AI 高清修復 API
+POST https://my-ai-image-tool-1h62tezj2-dr-1am.vercel.app/api/upscale
+Content-Type: application/json
+
+{
+  "url": "https://www.google.com/images/branding/googlelogo/1x/googlelogo_color_272x92dp.png"
+}
