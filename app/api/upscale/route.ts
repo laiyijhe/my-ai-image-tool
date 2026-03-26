@@ -1,37 +1,39 @@
-import { NextResponse } from 'next/server';
+import { NextResponse } from "next/server";
+import Replicate from "replicate";
 
-// POST 負責發起修復請求
+const replicate = new Replicate({
+  auth: process.env.REPLICATE_API_TOKEN,
+});
+
 export async function POST(req: Request) {
   try {
-    const { imageUrl } = await req.json();
-    const response = await fetch("https://api.replicate.com/v1/predictions", {
-      method: "POST",
-      headers: {
-        "Authorization": `Token ${process.env.REPLICATE_API_TOKEN}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        version: "660d551d50d41d9963da1807e32a6fa2c3f84f183e2009a0a256d05f3246a489",
-        input: { image: imageUrl, upscale: 4 }
-      }),
-    });
-    const prediction = await response.json();
-    return NextResponse.json(prediction);
+    const { url } = await req.json();
+
+    if (!process.env.REPLICATE_API_TOKEN) {
+      return NextResponse.json({ error: "電池（Token）沒裝好！" }, { status: 500 });
+    }
+
+    // 使用 Real-ESRGAN 模型進行高清修復
+    const output = await replicate.run(
+      "daanelson/real-esrgan-a100:42425f12c34bc928a30644040e3a68da5608d0979a4059049a44400c968f2f45",
+      {
+        input: {
+          image: url,
+          upscale: 4, // 放大 4 倍
+        },
+      }
+    );
+
+    // 這裡最關鍵：有的模型回傳字串，有的回傳陣列
+    const finalUrl = Array.isArray(output) ? output[0] : output;
+
+    if (!finalUrl) {
+      return NextResponse.json({ error: "AI 沒給圖片網址" }, { status: 500 });
+    }
+
+    return NextResponse.json({ url: finalUrl });
   } catch (error: any) {
+    console.error("AI 修復失敗:", error);
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
-}
-
-// GET 負責查詢進度 (Polling)
-export async function GET(req: Request) {
-  const { searchParams } = new URL(req.url);
-  const id = searchParams.get('id');
-
-  const response = await fetch(`https://api.replicate.com/v1/predictions/${id}`, {
-    headers: {
-      "Authorization": `Token ${process.env.REPLICATE_API_TOKEN}`,
-    },
-  });
-  const prediction = await response.json();
-  return NextResponse.json(prediction);
 }
