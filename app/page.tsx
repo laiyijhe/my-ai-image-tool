@@ -39,12 +39,22 @@ export default function UpscalePage() {
       <div style={{ marginBottom: "20px" }}>
         <p>1. 請在下方貼上圖片網址：</p>
         <input 
-          type="text" 
-          placeholder="https://example.com/image.jpg"
-          value={imageUrl}
-          onChange={(e) => setImageUrl(e.target.value)}
-          style={{ width: "100%", padding: "12px", borderRadius: "8px", border: "1px solid #ccc", color: "black" }}
-        />
+  type="text" 
+  placeholder="請在此按右鍵貼上網址"
+  value={imageUrl}
+  onChange={(e) => setImageUrl(e.target.value)}
+  style={{ 
+    width: "100%", 
+    padding: "15px", 
+    borderRadius: "8px", 
+    border: "3px solid #0070f3", // 藍色粗邊框
+    color: "#000000",            // 強制純黑色文字
+    backgroundColor: "#ffffff",   // 強制純白色背景
+    fontSize: "16px",
+    display: "block",
+    outline: "none"
+  }}
+/>
       </div>
 
       <button 
