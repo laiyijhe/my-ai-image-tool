@@ -40,19 +40,21 @@ export default function UpscalePage() {
         <p>1. 請在下方貼上圖片網址：</p>
         <input 
   type="text" 
-  placeholder="請在此按右鍵貼上網址"
+  placeholder="請在此貼上圖片網址"
   value={imageUrl}
   onChange={(e) => setImageUrl(e.target.value)}
   style={{ 
     width: "100%", 
     padding: "15px", 
     borderRadius: "8px", 
-    border: "3px solid #0070f3", // 藍色粗邊框
-    color: "#000000",            // 強制純黑色文字
-    backgroundColor: "#ffffff",   // 強制純白色背景
-    fontSize: "16px",
+    border: "3px solid #0070f3", 
+    color: "#000000",            // 強制純黑文字
+    backgroundColor: "#ffffff",   // 強制純白背景
+    fontSize: "18px",            // 字體加大
+    fontWeight: "bold",          // 加粗
     display: "block",
-    outline: "none"
+    outline: "none",
+    appearance: "none"           // 防止被手機瀏覽器改色
   }}
 />
       </div>
