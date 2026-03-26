@@ -9,28 +9,28 @@ export async function POST(req: Request) {
   try {
     const { url } = await req.json();
 
-    if (!url || !url.startsWith("http")) {
-      return NextResponse.json({ error: "無效的圖片網址" }, { status: 400 });
-    }
+    if (!url) return NextResponse.json({ error: "請提供網址" }, { status: 400 });
 
-    // 換成這個更穩定的模型版本
+    // 這是目前 Replicate 上最穩定的 Real-ESRGAN 版本 ID
     const output = await replicate.run(
-      "nightmareai/real-esrgan:42425f12c34bc928a30644040e3a68da5608d0979a4059049a44400c968f2f45",
+      "nightmareai/real-esrgan:f12134f35a09849204043f11003f56555127027878a63f707f4575971a8bc14d",
       {
         input: {
           image: url,
           upscale: 2,
-          face_enhance: true, // 順便幫你加上人臉修復，對賣家拍模特兒很有用
+          face_enhance: true,
         },
       }
     );
 
+    // 確保拿到的網址是正確的
     const finalUrl = Array.isArray(output) ? output[0] : output;
-    return NextResponse.json({ url: finalUrl });
+    
+    if (!finalUrl) throw new Error("AI 沒有回傳結果");
 
+    return NextResponse.json({ url: finalUrl });
   } catch (error: any) {
-    console.error("Replicate Error:", error.message);
-    // 這裡會把 422 的具體原因抓出來
+    console.error("Debug:", error.message);
     return NextResponse.json({ error: `AI 引擎拒絕要求：${error.message}` }, { status: 500 });
   }
 }
