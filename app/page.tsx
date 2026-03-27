@@ -1,22 +1,20 @@
 "use client";
 import { useState } from "react";
 
-export default function UpscalePage() {
-  const [images, setImages] = useState<File[]>([]); // 儲存選取的 3 張圖
-  const [previews, setPreviews] = useState<string[]>([]); // 儲存預覽圖的 Base64
+export default function HomePage() {
+  const [images, setImages] = useState<File[]>([]);
+  const [previews, setPreviews] = useState<string[]>([]);
   const [status, setStatus] = useState("idle");
   const [result, setResult] = useState<string | null>(null);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files) {
-      const selectedFiles = Array.from(e.target.files).slice(0, 3); // 最多選 3 張
+      const selectedFiles = Array.from(e.target.files).slice(0, 3);
       if (selectedFiles.length < 3) {
         alert("❌ 請選取恰好 3 張圖片喔！");
         return;
       }
       setImages(selectedFiles);
-
-      // 🏆 🏆 🏆 🏆 🏆 黃金：自動產生預覽圖 🏆 🏆 🏆 🏆 🏆
       const selectedPreviews: string[] = [];
       selectedFiles.forEach(file => {
         const reader = new FileReader();
@@ -35,8 +33,6 @@ export default function UpscalePage() {
     if (images.length < 3) return alert("❌ 請先選取 3 張圖片！");
     setStatus("starting");
     setResult(null);
-
-    // 我們將 3 張 Base64 資料傳送給後台
     try {
       const res = await fetch("/api/upscale", {
         method: "POST",
@@ -55,26 +51,17 @@ export default function UpscalePage() {
   };
 
   return (
-    <div style={{ padding: "40px", maxWidth: "800px", margin: "0 auto", textAlign: "center", backgroundColor: "#f0f0f0", minHeight: "100vh" }}>
-      <h1 style={{ color: "#333", marginBottom: "30px" }}>玩具公仔「一鍵多圖拼貼」robot </h1>
+    <div style={{ padding: "40px", maxWidth: "800px", margin: "0 auto", textAlign: "center", backgroundColor: "#f0f0f0", minHeight: "100vh", color: "#333" }}>
+      <h1 style={{ marginBottom: "30px" }}>玩具公仔「一鍵多圖拼貼」robot </h1>
       
       <div style={{ backgroundColor: "#fff", padding: "30px", borderRadius: "15px", boxShadow: "0 10px 30px rgba(0,0,0,0.1)", textAlign: "left" }}>
-        <p style={{ color: "#000", fontWeight: "bold", fontSize: "18px" }}>步驟 1: 一次選取 3 張公仔照片（主圖+細節A+細節B）</p>
-        <input 
-          type="file" multiple accept="image/*" onChange={handleFileChange} 
-          style={{ marginBottom: "20px", display: "block" }}
-        />
+        <p style={{ fontWeight: "bold", fontSize: "18px" }}>步驟 1: 一次選取 3 張公仔照片</p>
+        <input type="file" multiple accept="image/*" onChange={handleFileChange} style={{ marginBottom: "20px" }} />
 
-        {/* 🏆 🏆 🏆 🏆 🏆 預覽區域 🏆 🏆 🏆 🏆 🏆 */}
         {previews.length > 0 && (
           <div style={{ display: "flex", gap: "10px", marginBottom: "25px" }}>
-            {previews.map((preview, index) => (
-              <div key={index} style={{ position: "relative" }}>
-                <img src={preview} style={{ width: "150px", height: "150px", objectFit: "cover", borderRadius: "10px", border: "2px solid #ccc" }} />
-                <div style={{ position: "absolute", top: "5px", right: "5px", backgroundColor: "rgba(0,0,0,0.5)", color: "#fff", padding: "3px 8px", borderRadius: "5px" }}>
-                  圖 {index + 1}
-                </div>
-              </div>
+            {previews.map((p, i) => (
+              <img key={i} src={p} style={{ width: "100px", height: "100px", objectFit: "cover", borderRadius: "8px" }} />
             ))}
           </div>
         )}
@@ -82,21 +69,18 @@ export default function UpscalePage() {
         <button 
           onClick={handleUpload} 
           disabled={status === "starting" || images.length < 3}
-          style={{ 
-            width: "100%", padding: "18px", 
-            backgroundColor: images.length === 3 ? "#0070f3" : "#ccc", 
-            color: "#fff", border: "none", borderRadius: "8px", 
-            fontSize: "20px", fontWeight: "bold", cursor: "pointer" 
-          }}
+          style={{ width: "100%", padding: "18px", backgroundColor: "#0070f3", color: "#fff", border: "none", borderRadius: "8px", fontSize: "20px", fontWeight: "bold", cursor: "pointer" }}
         >
           {status === "starting" ? "⏳ AI 正在拼命美工中..." : `🚀 開始拼圖上架 (${images.length}/3)`}
         </button>
       </div>
 
       {result && (
-        <div style={{ marginTop: "40px", textAlign: "center" }}>
-          <p style={{ color: "green", fontSize: "18px", fontWeight: "bold" }}>✅ 拼圖成功！可以直接儲存上架了！</p>
-          <img src={result} style={{ maxWidth: "100%", borderRadius: "10px", border: "2px solid #fff", boxShadow: "0 0 15px rgba(0,0,0,0.3)" }} />
+        <div style={{ marginTop: "40px" }}>
+          <p style={{ color: "green", fontWeight: "bold" }}>✅ 拼圖成功！</p>
+          <img src={result} style={{ maxWidth: "100%", borderRadius: "10px", border: "5px solid #fff" }} />
+          <br />
+          <a href={result} target="_blank" style={{ display: "inline-block", marginTop: "10px", color: "#0070f3" }}>點此下載高清原圖</a>
         </div>
       )}
     </div>
