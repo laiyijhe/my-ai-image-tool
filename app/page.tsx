@@ -2,13 +2,13 @@
 import { useState } from "react";
 
 export default function HomePage() {
-  const [preview, setPreview] = useState<string | null>(null); // 只存一張預覽
+  const [preview, setPreview] = useState<string | null>(null);
   const [status, setStatus] = useState("idle");
   const [result, setResult] = useState<string | null>(null);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
-      const file = e.target.files[0]; // 只抓第一張
+      const file = e.target.files[0];
       const reader = new FileReader();
       reader.onloadend = () => {
         setPreview(reader.result as string);
@@ -18,24 +18,27 @@ export default function HomePage() {
   };
 
   const handleUpload = async () => {
-    if (!preview) return alert("❌ 請先選取一張公仔照片！");
+    if (!preview) return alert("❌ 請先選取一張照片！");
     setStatus("starting");
     setResult(null);
     try {
       const res = await fetch("/api/upscale", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ imageDatas: [preview] }), // 只傳送這張圖
+        body: JSON.stringify({ imageDatas: [preview] }),
       });
       const data = await res.json();
       if (res.ok && data.url) {
-        setResult(data.url);
+        setResult(data.url); // 👈 這裡會觸發下方圖片顯示
         setStatus("success");
       } else {
         alert("❌ 失敗原因：" + (data.error || "未知錯誤"));
         setStatus("error");
       }
-    } catch (e) { setStatus("error"); }
+    } catch (e) { 
+      setStatus("error"); 
+      alert("連線發生錯誤");
+    }
   };
 
   return (
@@ -49,8 +52,8 @@ export default function HomePage() {
 
         {preview && (
           <div style={{ marginBottom: "25px" }}>
-            <p style={{ fontSize: "14px", color: "#888" }}>預覽原圖：</p>
-            <img src={preview} style={{ width: "200px", height: "auto", borderRadius: "8px", border: "1px solid #ddd" }} />
+            <p style={{ fontSize: "14px", color: "#888" }}>已選取：</p>
+            <img src={preview} style={{ width: "100px", borderRadius: "8px" }} />
           </div>
         )}
 
@@ -64,16 +67,29 @@ export default function HomePage() {
             fontSize: "20px", fontWeight: "bold", cursor: "pointer" 
           }}
         >
-          {status === "starting" ? "⏳ 機器人正在自動裁切與排版..." : "🚀 生成一鍵上架拼圖"}
+          {status === "starting" ? "⏳ 正在拼圖中..." : "🚀 生成一鍵上架拼圖"}
         </button>
       </div>
 
+      {/* 🏆🏆🏆 關鍵！顯示結果的區塊 🏆🏆🏆 */}
       {result && (
-        <div style={{ marginTop: "40px" }}>
-          <p style={{ color: "green", fontWeight: "bold", fontSize: "18px" }}>✅ 成果預覽 (包含主圖、細節與 Logo)：</p>
-          <img src={result} style={{ maxWidth: "100%", borderRadius: "10px", border: "5px solid #fff", boxShadow: "0 5px 20px rgba(0,0,0,0.2)" }} />
-          <br />
-          <a href={result} target="_blank" download style={{ display: "inline-block", marginTop: "15px", padding: "10px 20px", backgroundColor: "#333", color: "#fff", textDecoration: "none", borderRadius: "5px" }}>下載成品圖</a>
+        <div style={{ marginTop: "40px", padding: "20px", backgroundColor: "#fff", borderRadius: "15px" }}>
+          <p style={{ color: "green", fontWeight: "bold", fontSize: "18px", marginBottom: "15px" }}>✅ 生成成功！</p>
+          <img 
+            src={result} 
+            alt="Result"
+            style={{ maxWidth: "100%", borderRadius: "10px", boxShadow: "0 5px 15px rgba(0,0,0,0.2)" }} 
+          />
+          <div style={{ marginTop: "20px" }}>
+            <a 
+              href={result} 
+              target="_blank" 
+              rel="noreferrer"
+              style={{ padding: "10px 20px", backgroundColor: "#333", color: "#fff", textDecoration: "none", borderRadius: "5px" }}
+            >
+              📥 下載成品圖 (新視窗開啟)
+            </a>
+          </div>
         </div>
       )}
     </div>
