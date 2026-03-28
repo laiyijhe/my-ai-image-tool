@@ -18,41 +18,48 @@ export async function POST(req: Request) {
 
     const singleImage = imageDatas[0]; // 只取第一張
 
-    console.log("正在處理單圖上傳與智慧裁切...");
+    console.log("正在處理單圖上傳與標準化排版...");
 
-    // 1. 先把原圖上傳，並獲取 Public ID
+    // 1. 上傳：強行不使用任何資料夾 (folder)，直接丟根目錄，最安全！
     const uploadResponse = await cloudinary.uploader.upload(singleImage, {
-      folder: "toy_single_robot",
       resource_type: "auto",
       use_filename: true,
-      unique_filename: true
+      unique_filename: true,
+      folder: "" // 確保在根目錄
     });
 
-    const pid = uploadResponse.public_id;
+    const pid = uploadResponse.public_id; // 這時 pid 不會有斜線
 
-    // 🏆🏆🏆 🏆🏆🏆 核心修正：將 Logo 的疊加改成「選配」語法 🏆🏆🏆 🏆🏆🏆
+    // 🏆🏆🏆 🏆🏆🏆 最保險的拼圖語法 🏆🏆🏆 🏆🏆🏆
+    // 我們直接在 Cloudinary 的 URL 裡定義「大圖 + 兩個裁切」
     const finalUrl = cloudinary.url(pid, {
       transformation: [
-        // A. 底圖：固定 800x600 背景
+        // A. 底圖：設為 800x600 的主背景
         { width: 800, height: 600, crop: "fill", gravity: "center" },
-
-        // B. 疊加 1 (右上)：裁切臉部或中心區域 (g_auto)
-        { overlay: pid.replace(/\//g, ":"), width: 250, height: 250, crop: "fill", gravity: "auto", x: 10, y: 10, border: "3px_solid_white" },
-
-        // C. 疊加 2 (右中下)：裁切下半部 (g_south)
-        { overlay: pid.replace(/\//g, ":"), width: 250, height: 250, crop: "fill", gravity: "south", x: 10, y: 270, border: "3px_solid_white" },
-
-        // D. 【防破圖關鍵】我把這個 Logo 疊加的「位置」與「語法」稍微後移，並加上 opacity 作為緩衝。
-        // 💡 💡 💡 如果你的 Cloudinary 的 Media Library 根目錄裡，沒有一張叫 my_logo 的圖，圖片將會維持破圖！💡 💡 💡
-        { overlay: "my_logo", width: 120, gravity: "south_east", x: 20, y: 20, opacity: 90 }
+        
+        // B. 疊加 1 (右上)：拿同一個 pid 裁切臉部或中心區域 (g_auto)
+        { 
+          overlay: pid, 
+          width: 250, height: 250, crop: "fill", 
+          gravity: "auto", x: 15, y: 15, position: "north_east", border: "4px_solid_white" 
+        },
+        
+        // C. 疊加 2 (右下)：拿同一個 pid 裁切下半部 (g_south)
+        { 
+          overlay: pid, 
+          width: 250, height: 250, crop: "fill", 
+          gravity: "south", x: 15, y: 15, position: "south_east", border: "4px_solid_white" 
+        },
+        
+        // D. 【最後一步】我暫時把 my_logo 移除了。
+        // 💡 💡 💡 我們先確認「大圖 + 兩個裁切」能跑出來！如果連這個都破圖，那就是 Cloudinary 設定有問題。💡 💡 💡
       ]
     });
 
-    console.log("生成的成果網址:", finalUrl);
     return NextResponse.json({ url: finalUrl });
 
   } catch (error: any) {
-    console.error("Cloudinary Detailed Error:", error);
-    return NextResponse.json({ error: "拼圖失敗", details: error.message }, { status: 500 });
+    console.error("Cloudinary 錯誤:", error.message);
+    return NextResponse.json({ error: error.message }, { status: 500 });
   }
 }
