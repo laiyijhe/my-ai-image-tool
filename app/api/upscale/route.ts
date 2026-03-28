@@ -10,34 +10,40 @@ cloudinary.config({
 
 export async function POST(req: Request) {
   try {
-    // 1. 取得資料並檢查
-    const body = await req.json();
-    const { imageDatas } = body;
+    const { imageDatas } = await req.json(); // 接收前台傳來的單張圖片資料 (Base64)
 
-    if (!imageDatas || !Array.isArray(imageDatas) || imageDatas.length < 3) {
-      return NextResponse.json({ error: "❌ 請確保選取了 3 張圖片" }, { status: 400 });
+    // 因為現在是一張變三張，我們只要確認有第一張圖即可
+    if (!imageDatas || imageDatas.length === 0) {
+      return NextResponse.json({ error: "❌ 請確保選取了圖片喔！" }, { status: 400 });
     }
 
-    console.log("正在處理圖片上傳...");
+    const singleImage = imageDatas[0]; // 只取第一張
 
-    // 2. 上傳到 Cloudinary (這裡加上了更穩定的參數)
-    const uploadPromises = imageDatas.map((base64) => 
-      cloudinary.uploader.upload(base64, {
-        folder: "toy_robot_upload",
-        resource_type: "auto" // 自動辨識圖片格式
-      })
-    );
+    console.log("正在處理單圖上傳與自動美工...");
 
-    const uploadResponses = await Promise.all(uploadPromises);
-    const pids = uploadResponses.map(res => res.public_id);
+    // 1. 先把原圖上傳，並獲取 Public ID
+    const uploadResponse = await cloudinary.uploader.upload(singleImage, {
+      folder: "toy_single_robot",
+      resource_type: "auto"
+    });
 
-    // 3. 產生拼圖網址
-    // 注意：這裡加上了串接處理，確保特殊的 Public ID 也能正常顯示
-    const finalUrl = cloudinary.url(pids[0], {
+    const pid = uploadResponse.public_id; // 這是原圖的 ID
+
+    // 🏆 🏆 🏆 🏆 🏆 核心：一張變三張的魔法 🏆 🏆 🏆 🏆 🏆
+    // 我們將pid (原圖) 重複疊加三次，並套用不同的裁切參數
+
+    const finalUrl = cloudinary.url(pid, {
       transformation: [
+        // 1. 【底圖/主圖】：原圖縮小，固定 4:3 比例，作為背景
         { width: 800, height: 600, crop: "fill", gravity: "center" },
-        { overlay: pids[1].replace(/\//g, ":"), width: 250, height: 250, crop: "fill", gravity: "north_east", x: 10, y: 10, border: "3px_solid_white" },
-        { overlay: pids[2].replace(/\//g, ":"), width: 250, height: 250, crop: "fill", gravity: "north_east", x: 10, y: 270, border: "3px_solid_white" },
+
+        // 2. 【細節 A (右上)】：疊加同一張原圖，裁切臉部或中心區域 (g:auto 系統自動選)，變成正方形小圖
+        { overlay: pid, width: 250, height: 250, crop: "fill", gravity: "auto", x: 10, y: 10, border: "3px_solid_white" },
+
+        // 3. 【細節 B (右中下)】：疊加同一張原圖，裁切下半部區域 (g:south)，變成正方形小圖
+        { overlay: pid, width: 250, height: 250, crop: "fill", gravity: "south", x: 10, y: 270, border: "3px_solid_white" },
+
+        // 4. 【你的 Logo】：疊加在右下角
         { overlay: "my_logo", width: 120, gravity: "south_east", x: 20, y: 20 }
       ]
     });
@@ -45,10 +51,7 @@ export async function POST(req: Request) {
     return NextResponse.json({ url: finalUrl });
 
   } catch (error: any) {
-    console.error("Cloudinary 詳細錯誤:", error);
-    return NextResponse.json({ 
-      error: "拼圖失敗", 
-      details: error.message 
-    }, { status: 500 });
+    console.error("Cloudinary Detailed Error:", error);
+    return NextResponse.json({ error: "拼圖失敗", details: error.message }, { status: 500 });
   }
 }
