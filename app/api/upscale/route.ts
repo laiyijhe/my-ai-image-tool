@@ -10,38 +10,25 @@ cloudinary.config({
 export async function POST(req: Request) {
   try {
     const { imageDatas } = await req.json();
-    if (!imageDatas || imageDatas.length === 0) return NextResponse.json({ error: "❌ 無圖片資料" }, { status: 400 });
+    if (!imageDatas || imageDatas.length === 0) return NextResponse.json({ error: "❌ 無資料" }, { status: 400 });
 
-    // 1. 上傳原圖 (不放資料夾，減少路徑問題)
+    // 1. 上傳：不指定資料夾 (folder)，直接丟根目錄，最安全！
     const uploadResponse = await cloudinary.uploader.upload(imageDatas[0], {
-      use_filename: true,
-      unique_filename: true
+      resource_type: "auto",
     });
 
-    const pid = uploadResponse.public_id;
+    const pid = uploadResponse.public_id; // 這時 pid 不會有斜線
 
-    // 🏆 🏆 🏆 最保險的拼圖語法 🏆 🏆 🏆
-    // 我們直接在 Cloudinary 的 URL 裡定義「大圖 + 兩個裁切」
+    // 2. 生成拼圖網址：使用最基礎的疊加語法
+    // l_ (layer) 是 Cloudinary 最穩定的縮寫語法
     const finalUrl = cloudinary.url(pid, {
       transformation: [
-        // A. 底圖：設為 800x600 的主背景
+        // 主圖
         { width: 800, height: 600, crop: "fill", gravity: "center" },
-        
-        // B. 疊加 1 (右上)：拿同一個 pid 裁切臉部
-        { 
-          overlay: pid.replace(/\//g, ":"), 
-          width: 250, height: 250, crop: "fill", 
-          gravity: "auto", x: 15, y: 15, position: "north_east", border: "4px_solid_white" 
-        },
-        
-        // C. 疊加 2 (右下)：拿同一個 pid 裁切底部
-        { 
-          overlay: pid.replace(/\//g, ":"), 
-          width: 250, height: 250, crop: "fill", 
-          gravity: "south", x: 15, y: 15, position: "south_east", border: "4px_solid_white" 
-        }
-        
-        // 💡 暫時先不加 Logo，我們先確認這 3 張拼圖能跑出來！
+        // 疊加 1 (右上)
+        { overlay: pid, width: 250, height: 250, crop: "fill", gravity: "north_east", x: 15, y: 15, border: "4px_solid_white" },
+        // 疊加 2 (右下)
+        { overlay: pid, width: 250, height: 250, crop: "fill", gravity: "south_east", x: 15, y: 15, border: "4px_solid_white" }
       ]
     });
 
