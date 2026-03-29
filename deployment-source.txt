@@ -1,0 +1,11 @@
+Source of truth for Creator Guard
+===================================
+GitHub: https://github.com/laiyijhe/my-ai-image-tool
+Branch: main
+Homepage route: app/page.tsx (App Router only)
+
+This repo must NOT use a top-level "pages/" or "src/pages/" folder.
+
+If your Vercel URL still shows "Create Next App" or a blank template,
+the Vercel project is not connected to the GitHub repo above.
+Fix: Vercel Dashboard → your project → Settings → Git → connect laiyijhe/my-ai-image-tool, branch main, then Redeploy.

@@ -2,6 +2,7 @@
   "name": "my-ai-site",
   "version": "0.1.0",
   "private": true,
+  "description": "Creator Guard dashboard (Next.js App Router). Homepage: app/page.tsx. Do not add pages/ or src/pages/.",
   "scripts": {
     "dev": "next dev",
     "build": "next build",
