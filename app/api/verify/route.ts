@@ -1,10 +1,23 @@
 import { Jimp } from "jimp";
-import { extractMemberIdFromBitmap } from "@/lib/watermark-lsb";
+import {
+  extractMemberIdFromBitmapDetailed,
+  type WatermarkExtractFailureCode,
+} from "@/lib/watermark-lsb";
 import { NextResponse } from "next/server";
 
 export const runtime = "nodejs";
 
 const MAX_UPLOAD_BYTES = 12 * 1024 * 1024;
+
+const DEBUG_MESSAGES: Record<WatermarkExtractFailureCode, string> = {
+  magic_missing:
+    "Magic header missing — not a Creator Guard v2 image, or pixels were altered / recompressed.",
+  unsupported_version:
+    "Unsupported watermark version (expected v2 / 2-bit blue). Re-export a fresh PNG from a protected link.",
+  length_invalid: "Data corrupted: invalid length field in payload.",
+  payload_truncated: "Data corrupted: payload was cut off (truncated bit stream).",
+  utf8_corrupt: "Data corrupted: Member ID bytes are not valid UTF-8.",
+};
 
 export async function POST(request: Request) {
   let formData: FormData;
@@ -35,25 +48,31 @@ export async function POST(request: Request) {
   try {
     const ab = await file.arrayBuffer();
     const image = await Jimp.read(Buffer.from(ab));
-    const userId = extractMemberIdFromBitmap(image);
+    const result = extractMemberIdFromBitmapDetailed(image);
 
-    if (!userId) {
-      return NextResponse.json(
-        {
-          ok: false,
-          error: "no_watermark",
-          message:
-            "No Creator Guard watermark found. Use an original PNG from a protected link; JPEG recompression often removes invisible watermarks.",
-        },
-        { status: 422 }
-      );
+    if (result.ok) {
+      return NextResponse.json({ ok: true, userId: result.userId });
     }
 
-    return NextResponse.json({ ok: true, userId });
+    const code = result.code;
+    return NextResponse.json(
+      {
+        ok: false,
+        error: "watermark_failed",
+        code,
+        message: DEBUG_MESSAGES[code],
+      },
+      { status: 422 }
+    );
   } catch (err) {
     console.error("[Creator Guard verify] decode failed:", err);
     return NextResponse.json(
-      { ok: false, error: "decode_failed" },
+      {
+        ok: false,
+        error: "decode_failed",
+        code: "decode_failed",
+        message: "Server could not decode the image file.",
+      },
       { status: 500 }
     );
   }

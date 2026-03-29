@@ -90,6 +90,14 @@ export const dictionary: Record<Locale, Messages> = {
       "No watermark found. Save the image as PNG from the original protected link.",
     verifyUploadError: "Could not read that file. Try another image.",
     verifyBackHome: "← Back to dashboard",
+    verifyErrMagicMissing:
+      "Magic header missing — not a Creator Guard v2 PNG, or the image was recompressed / edited.",
+    verifyErrUnsupportedVersion:
+      "Wrong watermark version (v1 or unknown). Download a new PNG from a protected link.",
+    verifyErrLengthInvalid: "Data corrupted: invalid length field.",
+    verifyErrPayloadTruncated: "Data corrupted: payload truncated (bit stream cut off).",
+    verifyErrUtf8Corrupt: "Data corrupted: Member ID is not valid UTF-8.",
+    verifyErrDecodeFailed: "Server could not read this image file.",
   },
   "zh-TW": {
     brandName: "Creator Guard",
@@ -160,6 +168,14 @@ export const dictionary: Record<Locale, Messages> = {
     verifyNoWatermark: "找不到浮水印。請從原始受保護連結另存為 PNG。",
     verifyUploadError: "無法讀取檔案，請換一張圖片。",
     verifyBackHome: "← 返回控制台",
+    verifyErrMagicMissing:
+      "魔術標頭遺失 — 非 Creator Guard v2 的 PNG，或圖片已重新壓縮／編輯。",
+    verifyErrUnsupportedVersion:
+      "浮水印版本不符（v1 或未知）。請從受保護連結重新下載 PNG。",
+    verifyErrLengthInvalid: "資料毀損：長度欄位無效。",
+    verifyErrPayloadTruncated: "資料毀損：載荷被截斷（位元流不完整）。",
+    verifyErrUtf8Corrupt: "資料毀損：會員 ID 不是有效的 UTF-8。",
+    verifyErrDecodeFailed: "伺服器無法讀取此圖片檔。",
   },
   "zh-CN": {
     brandName: "Creator Guard",
@@ -230,6 +246,14 @@ export const dictionary: Record<Locale, Messages> = {
     verifyNoWatermark: "未找到水印。请从原始受保护链接另存为 PNG。",
     verifyUploadError: "无法读取文件，请换一张图片。",
     verifyBackHome: "← 返回控制台",
+    verifyErrMagicMissing:
+      "魔数缺失 — 不是 Creator Guard v2 的 PNG，或图像已重压缩/编辑。",
+    verifyErrUnsupportedVersion:
+      "水印版本不匹配（v1 或未知）。请从受保护链接重新下载 PNG。",
+    verifyErrLengthInvalid: "数据损坏：长度字段无效。",
+    verifyErrPayloadTruncated: "数据损坏：载荷被截断（比特流不完整）。",
+    verifyErrUtf8Corrupt: "数据损坏：会员 ID 不是有效的 UTF-8。",
+    verifyErrDecodeFailed: "服务器无法读取此图像文件。",
   },
   ja: {
     brandName: "Creator Guard",
@@ -303,6 +327,14 @@ export const dictionary: Record<Locale, Messages> = {
       "透かしが見つかりません。元の保護リンクからPNGで保存してください。",
     verifyUploadError: "ファイルを読めませんでした。別の画像を試してください。",
     verifyBackHome: "← ダッシュボードに戻る",
+    verifyErrMagicMissing:
+      "マジックヘッダーなし — Creator Guard v2 の PNG ではないか、再圧縮・編集されています。",
+    verifyErrUnsupportedVersion:
+      "透かしバージョンが一致しません（v1 など）。保護リンクから PNG を取り直してください。",
+    verifyErrLengthInvalid: "データ破損：長さフィールドが無効です。",
+    verifyErrPayloadTruncated: "データ破損：ペイロードが途中で切れています。",
+    verifyErrUtf8Corrupt: "データ破損：会員IDの UTF-8 が無効です。",
+    verifyErrDecodeFailed: "サーバーがこの画像を読めませんでした。",
   },
   ko: {
     brandName: "Creator Guard",
@@ -376,6 +408,14 @@ export const dictionary: Record<Locale, Messages> = {
       "워터마크를 찾을 수 없습니다. 원본 보호 링크에서 PNG로 저장하세요.",
     verifyUploadError: "파일을 읽을 수 없습니다. 다른 이미지를 시도하세요.",
     verifyBackHome: "← 대시보드로",
+    verifyErrMagicMissing:
+      "매직 헤더 없음 — Creator Guard v2 PNG가 아니거나 재압축/편집된 이미지입니다.",
+    verifyErrUnsupportedVersion:
+      "워터마크 버전이 맞지 않습니다(v1 등). 보호 링크에서 PNG를 다시 받으세요.",
+    verifyErrLengthInvalid: "데이터 손상: 길이 필드가 잘못되었습니다.",
+    verifyErrPayloadTruncated: "데이터 손상: 페이로드가 잘렸습니다.",
+    verifyErrUtf8Corrupt: "데이터 손상: 회원 ID의 UTF-8이 올바르지 않습니다.",
+    verifyErrDecodeFailed: "서버가 이 이미지를 읽지 못했습니다.",
   },
 };
 

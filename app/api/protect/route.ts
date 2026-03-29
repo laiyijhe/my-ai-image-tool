@@ -54,7 +54,9 @@ export async function GET(request: NextRequest) {
     return new NextResponse(body, {
       status: 200,
       headers: {
+        /** Strict binary PNG — no charset; prevents MIME sniffing issues. */
         "Content-Type": "image/png",
+        "X-Content-Type-Options": "nosniff",
         "Cache-Control": "private, no-store",
       },
     });

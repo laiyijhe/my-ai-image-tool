@@ -2,8 +2,28 @@
 
 import { LanguageSelector } from "@/components/LanguageSelector";
 import { useLanguage } from "@/lib/i18n/language-context";
+import type { Messages } from "@/lib/i18n/types";
 import Link from "next/link";
 import { useCallback, useRef, useState } from "react";
+
+function mapVerifyFailureCode(code: string | undefined, tr: Messages): string {
+  switch (code) {
+    case "magic_missing":
+      return tr.verifyErrMagicMissing;
+    case "unsupported_version":
+      return tr.verifyErrUnsupportedVersion;
+    case "length_invalid":
+      return tr.verifyErrLengthInvalid;
+    case "payload_truncated":
+      return tr.verifyErrPayloadTruncated;
+    case "utf8_corrupt":
+      return tr.verifyErrUtf8Corrupt;
+    case "decode_failed":
+      return tr.verifyErrDecodeFailed;
+    default:
+      return tr.verifyNoWatermark;
+  }
+}
 
 export default function VerifyPage() {
   const { t } = useLanguage();
@@ -13,12 +33,14 @@ export default function VerifyPage() {
   const [loading, setLoading] = useState(false);
   const [userId, setUserId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [errorDebug, setErrorDebug] = useState<string | null>(null);
 
   const analyze = useCallback(
     async (f: File) => {
       setFile(f);
       setUserId(null);
       setError(null);
+      setErrorDebug(null);
       setLoading(true);
       try {
         const fd = new FormData();
@@ -28,19 +50,30 @@ export default function VerifyPage() {
           ok?: boolean;
           userId?: string;
           message?: string;
+          code?: string;
         };
         if (data.ok && data.userId) setUserId(data.userId);
-        else
+        else {
+          const code = data.code;
           setError(
-            data.message ?? t.verifyNoWatermark
+            code ? mapVerifyFailureCode(code, t) : data.message ?? t.verifyNoWatermark
           );
+          if (code && data.message) {
+            setErrorDebug(`code: ${code}\n${data.message}`);
+          } else if (code) {
+            setErrorDebug(`code: ${code}`);
+          } else if (data.message) {
+            setErrorDebug(data.message);
+          }
+        }
       } catch {
         setError(t.verifyUploadError);
+        setErrorDebug(null);
       } finally {
         setLoading(false);
       }
     },
-    [t.verifyNoWatermark, t.verifyUploadError]
+    [t]
   );
 
   const onDrop = useCallback(
@@ -140,7 +173,12 @@ export default function VerifyPage() {
 
         {error ? (
           <div className="mt-6 rounded-2xl border border-amber-500/25 bg-amber-950/30 px-4 py-3 text-center text-sm text-amber-200/90">
-            {error}
+            <p>{error}</p>
+            {errorDebug ? (
+              <pre className="mt-3 whitespace-pre-wrap break-all text-left font-mono text-[10px] leading-relaxed text-amber-200/50">
+                {errorDebug}
+              </pre>
+            ) : null}
           </div>
         ) : null}
 

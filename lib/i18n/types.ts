@@ -64,4 +64,10 @@ export type Messages = {
   verifyNoWatermark: string;
   verifyUploadError: string;
   verifyBackHome: string;
+  verifyErrMagicMissing: string;
+  verifyErrUnsupportedVersion: string;
+  verifyErrLengthInvalid: string;
+  verifyErrPayloadTruncated: string;
+  verifyErrUtf8Corrupt: string;
+  verifyErrDecodeFailed: string;
 };
