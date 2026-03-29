@@ -9,6 +9,7 @@ import { LanguageSelector } from "@/components/LanguageSelector";
 import { linksReadyManyTemplate } from "@/lib/i18n/dictionary";
 import { useLanguage } from "@/lib/i18n/language-context";
 import type { Messages } from "@/lib/i18n/types";
+import Link from "next/link";
 import {
   startTransition,
   useCallback,
@@ -456,6 +457,15 @@ export default function Home() {
             </section>
           ) : null}
         </div>
+
+        <footer className="mt-14 border-t border-white/[0.06] pt-10 text-center">
+          <Link
+            href="/verify"
+            className="text-sm font-medium text-cyan-400/80 transition hover:text-cyan-300"
+          >
+            {t.verifyToolLink}
+          </Link>
+        </footer>
       </div>
     </div>
   );

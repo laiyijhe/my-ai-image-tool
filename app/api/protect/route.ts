@@ -1,20 +1,18 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { Jimp } from "jimp";
+import { embedMemberIdInBitmap } from "@/lib/watermark-lsb";
 import { type NextRequest, NextResponse } from "next/server";
 
 const PUBLIC_REL = join("public", "test.jpg");
 
-/**
- * Load JPEG bytes: prefer local `public/test.jpg` (dev / full Node FS).
- * On Vercel serverless, `public` is often not on disk for route handlers — fetch the deployed static asset.
- */
-async function loadTestJpegBytes(request: NextRequest): Promise<Buffer | null> {
+async function loadBaseJimp(
+  request: NextRequest
+): Promise<Awaited<ReturnType<typeof Jimp.read>> | null> {
   const localPath = join(process.cwd(), PUBLIC_REL);
   if (existsSync(localPath)) {
     try {
-      const image = await Jimp.read(localPath);
-      return Buffer.from(await image.getBuffer("image/jpeg"));
+      return await Jimp.read(localPath);
     } catch {
       return null;
     }
@@ -25,20 +23,18 @@ async function loadTestJpegBytes(request: NextRequest): Promise<Buffer | null> {
     const res = await fetch(url, { cache: "no-store" });
     if (!res.ok) return null;
     const ab = await res.arrayBuffer();
-    const image = await Jimp.read(Buffer.from(ab));
-    return Buffer.from(await image.getBuffer("image/jpeg"));
+    return await Jimp.read(Buffer.from(ab));
   } catch {
     return null;
   }
 }
 
 export async function GET(request: NextRequest) {
-  const userId = request.nextUrl.searchParams.get("userId");
-  console.log("[Creator Guard protect] userId:", userId ?? "(none)");
+  const userId = request.nextUrl.searchParams.get("userId") ?? "unknown";
+  console.log("[Creator Guard protect] userId:", userId);
 
-  const jpeg = await loadTestJpegBytes(request);
-
-  if (!jpeg) {
+  const base = await loadBaseJimp(request);
+  if (!base) {
     return NextResponse.json(
       {
         error: "Image not found",
@@ -50,20 +46,24 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    const body = new Uint8Array(jpeg);
+    const image = base.clone();
+    embedMemberIdInBitmap(image, userId);
+    const buf = await image.getBuffer("image/png");
+    const body = new Uint8Array(buf);
+
     return new NextResponse(body, {
       status: 200,
       headers: {
-        "Content-Type": "image/jpeg",
+        "Content-Type": "image/png",
         "Cache-Control": "private, no-store",
       },
     });
   } catch (err) {
-    console.error("[Creator Guard protect] failed to encode image:", err);
+    console.error("[Creator Guard protect] watermark failed:", err);
     return NextResponse.json(
       {
         error: "Image processing failed",
-        message: "Could not read or serve the protected image.",
+        message: "Could not embed invisible watermark or encode image.",
       },
       { status: 500 }
     );

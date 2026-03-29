@@ -77,6 +77,19 @@ export const dictionary: Record<Locale, Messages> = {
     generateAllCta: "Generate everything",
     needMembersHint: "Upload a list or add names, then try again.",
     regenCreatorAria: "Generate a new portal ID",
+    verifyToolLink: "Verify leaked image",
+    verifyPageTitle: "Verify leak",
+    verifyPageSubtitle:
+      "Upload a protected image to recover the hidden Member ID (lossless PNG from Creator Guard works best).",
+    verifyDropTitle: "Drop image to verify",
+    verifyDropHint: "PNG recommended · JPEG may strip the watermark",
+    verifyButton: "Analyze image",
+    verifyAnalyzing: "Analyzing…",
+    verifyMemberLabel: "Embedded Member ID",
+    verifyNoWatermark:
+      "No watermark found. Save the image as PNG from the original protected link.",
+    verifyUploadError: "Could not read that file. Try another image.",
+    verifyBackHome: "← Back to dashboard",
   },
   "zh-TW": {
     brandName: "Creator Guard",
@@ -135,6 +148,18 @@ export const dictionary: Record<Locale, Messages> = {
     generateAllCta: "一鍵全部產生",
     needMembersHint: "請上傳名單或輸入名稱後再試。",
     regenCreatorAria: "產生新的入口 ID",
+    verifyToolLink: "驗證外洩圖片",
+    verifyPageTitle: "驗證外洩",
+    verifyPageSubtitle:
+      "上傳受保護圖片以還原隱藏的會員 ID（請優先使用 Creator Guard 的原始 PNG）。",
+    verifyDropTitle: "拖放圖片以驗證",
+    verifyDropHint: "建議使用 PNG · JPEG 可能破壞浮水印",
+    verifyButton: "分析圖片",
+    verifyAnalyzing: "分析中…",
+    verifyMemberLabel: "嵌入的會員 ID",
+    verifyNoWatermark: "找不到浮水印。請從原始受保護連結另存為 PNG。",
+    verifyUploadError: "無法讀取檔案，請換一張圖片。",
+    verifyBackHome: "← 返回控制台",
   },
   "zh-CN": {
     brandName: "Creator Guard",
@@ -193,6 +218,18 @@ export const dictionary: Record<Locale, Messages> = {
     generateAllCta: "一键全部生成",
     needMembersHint: "请上传名单或输入名称后再试。",
     regenCreatorAria: "生成新的入口 ID",
+    verifyToolLink: "验证泄露图片",
+    verifyPageTitle: "验证泄露",
+    verifyPageSubtitle:
+      "上传受保护图片以提取隐藏的会员 ID（优先使用 Creator Guard 的原始 PNG）。",
+    verifyDropTitle: "拖放图片以验证",
+    verifyDropHint: "建议使用 PNG · JPEG 可能破坏水印",
+    verifyButton: "分析图片",
+    verifyAnalyzing: "分析中…",
+    verifyMemberLabel: "嵌入的会员 ID",
+    verifyNoWatermark: "未找到水印。请从原始受保护链接另存为 PNG。",
+    verifyUploadError: "无法读取文件，请换一张图片。",
+    verifyBackHome: "← 返回控制台",
   },
   ja: {
     brandName: "Creator Guard",
@@ -253,6 +290,19 @@ export const dictionary: Record<Locale, Messages> = {
     generateAllCta: "すべて生成",
     needMembersHint: "リストをアップロードするか名前を入力してください。",
     regenCreatorAria: "新しいポータルIDを生成",
+    verifyToolLink: "流出画像を検証",
+    verifyPageTitle: "流出検証",
+    verifyPageSubtitle:
+      "保護画像をアップロードして隠し会員IDを復元（Creator Guardの元PNG推奨）。",
+    verifyDropTitle: "画像をドロップして検証",
+    verifyDropHint: "PNG推奨 · JPEGは透かしが壊れることがあります",
+    verifyButton: "画像を解析",
+    verifyAnalyzing: "解析中…",
+    verifyMemberLabel: "埋め込まれた会員ID",
+    verifyNoWatermark:
+      "透かしが見つかりません。元の保護リンクからPNGで保存してください。",
+    verifyUploadError: "ファイルを読めませんでした。別の画像を試してください。",
+    verifyBackHome: "← ダッシュボードに戻る",
   },
   ko: {
     brandName: "Creator Guard",
@@ -313,6 +363,19 @@ export const dictionary: Record<Locale, Messages> = {
     generateAllCta: "한 번에 모두 생성",
     needMembersHint: "목록을 업로드하거나 이름을 입력한 뒤 다시 시도하세요.",
     regenCreatorAria: "새 포털 ID 생성",
+    verifyToolLink: "유출 이미지 검증",
+    verifyPageTitle: "유출 검증",
+    verifyPageSubtitle:
+      "보호된 이미지를 업로드하면 숨겨진 회원 ID를 복원합니다 (Creator Guard 원본 PNG 권장).",
+    verifyDropTitle: "이미지를 놓고 검증",
+    verifyDropHint: "PNG 권장 · JPEG는 워터마크가 손상될 수 있음",
+    verifyButton: "이미지 분석",
+    verifyAnalyzing: "분석 중…",
+    verifyMemberLabel: "삽입된 회원 ID",
+    verifyNoWatermark:
+      "워터마크를 찾을 수 없습니다. 원본 보호 링크에서 PNG로 저장하세요.",
+    verifyUploadError: "파일을 읽을 수 없습니다. 다른 이미지를 시도하세요.",
+    verifyBackHome: "← 대시보드로",
   },
 };
 

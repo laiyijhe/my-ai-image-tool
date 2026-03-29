@@ -52,4 +52,16 @@ export type Messages = {
   generateAllCta: string;
   needMembersHint: string;
   regenCreatorAria: string;
+  /** Leak verification */
+  verifyToolLink: string;
+  verifyPageTitle: string;
+  verifyPageSubtitle: string;
+  verifyDropTitle: string;
+  verifyDropHint: string;
+  verifyButton: string;
+  verifyAnalyzing: string;
+  verifyMemberLabel: string;
+  verifyNoWatermark: string;
+  verifyUploadError: string;
+  verifyBackHome: string;
 };
