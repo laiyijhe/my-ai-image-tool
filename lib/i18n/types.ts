@@ -39,4 +39,17 @@ export type Messages = {
   errorState: string;
   protectedContentAlt: string;
   languageLabel: string;
+  /** Simplified dashboard (Apple-style) */
+  heroTagline: string;
+  portalYourId: string;
+  creatorTapToEdit: string;
+  creatorNewId: string;
+  dropZoneTitle: string;
+  dropZoneSubtitle: string;
+  browseButton: string;
+  optionalNamesLabel: string;
+  compactNamesPlaceholder: string;
+  generateAllCta: string;
+  needMembersHint: string;
+  regenCreatorAria: string;
 };
