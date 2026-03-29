@@ -1,96 +1,266 @@
 "use client";
-import { useState } from "react";
 
-export default function HomePage() {
-  const [preview, setPreview] = useState<string | null>(null);
-  const [status, setStatus] = useState("idle");
-  const [result, setResult] = useState<string | null>(null);
+import { LanguageSelector } from "@/components/LanguageSelector";
+import { linksReadyManyTemplate } from "@/lib/i18n/dictionary";
+import { useLanguage } from "@/lib/i18n/language-context";
+import type { Messages } from "@/lib/i18n/types";
+import { useCallback, useEffect, useState } from "react";
 
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files[0]) {
-      const file = e.target.files[0];
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        setPreview(reader.result as string);
-      };
-      reader.readAsDataURL(file);
-    }
-  };
+type Row = { name: string; path: string };
 
-  const handleUpload = async () => {
-    if (!preview) return alert("❌ 請先選取一張照片！");
-    setStatus("starting");
-    setResult(null);
+const STORAGE_KEY = "creatorGuardCreatorId";
+
+function parseMemberNames(raw: string): string[] {
+  return raw
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+function normalizeCreatorId(raw: string): string {
+  return raw.trim().slice(0, 128);
+}
+
+function escapeCsvCell(s: string): string {
+  return `"${s.replace(/"/g, '""')}"`;
+}
+
+function downloadCsv(rows: Row[], t: Messages) {
+  if (typeof window === "undefined" || rows.length === 0) return;
+  const origin = window.location.origin;
+  const header =
+    [
+      escapeCsvCell(t.csvHeaderMemberName),
+      escapeCsvCell(t.csvHeaderFullUrl),
+      escapeCsvCell(t.csvHeaderPath),
+    ].join(",") + "\n";
+  const lines = rows.map((r) => {
+    const full = `${origin}${r.path}`;
+    return [
+      escapeCsvCell(r.name),
+      escapeCsvCell(full),
+      escapeCsvCell(r.path),
+    ].join(",");
+  });
+  const blob = new Blob([header + lines.join("\n")], {
+    type: "text/csv;charset=utf-8;",
+  });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `creator-guard-links-${new Date().toISOString().slice(0, 10)}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+export default function Home() {
+  const { t } = useLanguage();
+  const [creatorIdInput, setCreatorIdInput] = useState("");
+  const [input, setInput] = useState("");
+  const [rows, setRows] = useState<Row[]>([]);
+  const [copiedPath, setCopiedPath] = useState<string | null>(null);
+  const [origin, setOrigin] = useState("");
+
+  useEffect(() => {
+    setOrigin(window.location.origin);
     try {
-      const res = await fetch("/api/upscale", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ imageDatas: [preview] }),
-      });
-      const data = await res.json();
-      if (res.ok && data.url) {
-        setResult(data.url); // 👈 這裡會觸發下方圖片顯示
-        setStatus("success");
-      } else {
-        alert("❌ 失敗原因：" + (data.error || "未知錯誤"));
-        setStatus("error");
-      }
-    } catch (e) { 
-      setStatus("error"); 
-      alert("連線發生錯誤");
+      const saved = localStorage.getItem(STORAGE_KEY);
+      if (saved) setCreatorIdInput(saved);
+    } catch {
+      /* ignore */
     }
-  };
+  }, []);
+
+  const creatorLabel = normalizeCreatorId(creatorIdInput);
+  const globalPath = creatorLabel
+    ? `/view/${encodeURIComponent(creatorLabel)}`
+    : "";
+
+  useEffect(() => {
+    if (!creatorLabel) return;
+    try {
+      localStorage.setItem(STORAGE_KEY, creatorLabel);
+    } catch {
+      /* ignore */
+    }
+  }, [creatorLabel]);
+
+  const generate = useCallback(() => {
+    const names = parseMemberNames(input);
+    setRows(
+      names.map((name) => ({
+        name,
+        path: `/api/protect?userId=${encodeURIComponent(name)}`,
+      }))
+    );
+  }, [input]);
+
+  const copyLink = useCallback(async (path: string) => {
+    const origin =
+      typeof window !== "undefined" ? window.location.origin : "";
+    const full = origin ? `${origin}${path}` : path;
+    try {
+      await navigator.clipboard.writeText(full);
+      setCopiedPath(path);
+      window.setTimeout(() => setCopiedPath(null), 2000);
+    } catch {
+      setCopiedPath(null);
+    }
+  }, []);
 
   return (
-    <div style={{ padding: "40px", maxWidth: "800px", margin: "0 auto", textAlign: "center", backgroundColor: "#f0f0f0", minHeight: "100vh", color: "#333" }}>
-      <h1 style={{ marginBottom: "10px" }}>玩具公仔「自動美工機器人」 </h1>
-      <p style={{ marginBottom: "30px", color: "#666" }}>上傳一張原圖，自動生成「大圖 + 兩張細節裁切圖」</p>
-      
-      <div style={{ backgroundColor: "#fff", padding: "30px", borderRadius: "15px", boxShadow: "0 10px 30px rgba(0,0,0,0.1)", textAlign: "left" }}>
-        <p style={{ fontWeight: "bold", fontSize: "18px" }}>步驟 1: 選取一張公仔照片</p>
-        <input type="file" accept="image/*" onChange={handleFileChange} style={{ marginBottom: "20px" }} />
-
-        {preview && (
-          <div style={{ marginBottom: "25px" }}>
-            <p style={{ fontSize: "14px", color: "#888" }}>已選取：</p>
-            <img src={preview} style={{ width: "100px", borderRadius: "8px" }} />
-          </div>
-        )}
-
-        <button 
-          onClick={handleUpload} 
-          disabled={status === "starting" || !preview}
-          style={{ 
-            width: "100%", padding: "18px", 
-            backgroundColor: preview ? "#0070f3" : "#ccc", 
-            color: "#fff", border: "none", borderRadius: "8px", 
-            fontSize: "20px", fontWeight: "bold", cursor: "pointer" 
-          }}
-        >
-          {status === "starting" ? "⏳ 正在拼圖中..." : "🚀 生成一鍵上架拼圖"}
-        </button>
+    <div className="relative mx-auto min-h-screen max-w-5xl px-4 py-10 sm:px-6 lg:px-8">
+      <div className="pointer-events-none absolute right-4 top-4 z-20 sm:right-6 lg:right-8">
+        <div className="pointer-events-auto">
+          <LanguageSelector />
+        </div>
       </div>
 
-      {/* 🏆🏆🏆 關鍵！顯示結果的區塊 🏆🏆🏆 */}
-      {result && (
-        <div style={{ marginTop: "40px", padding: "20px", backgroundColor: "#fff", borderRadius: "15px" }}>
-          <p style={{ color: "green", fontWeight: "bold", fontSize: "18px", marginBottom: "15px" }}>✅ 生成成功！</p>
-          <img 
-            src={result} 
-            alt="Result"
-            style={{ maxWidth: "100%", borderRadius: "10px", boxShadow: "0 5px 15px rgba(0,0,0,0.2)" }} 
-          />
-          <div style={{ marginTop: "20px" }}>
-            <a 
-              href={result} 
-              target="_blank" 
-              rel="noreferrer"
-              style={{ padding: "10px 20px", backgroundColor: "#333", color: "#fff", textDecoration: "none", borderRadius: "5px" }}
+      <header className="mb-10 border-b border-slate-800/80 pb-8 pr-28 sm:pr-36">
+        <p className="text-sm font-medium uppercase tracking-[0.2em] text-cyan-400/90">
+          {t.heroSubtitle}
+        </p>
+        <h1 className="mt-2 text-3xl font-semibold tracking-tight text-white sm:text-4xl">
+          {t.heroTitle}
+        </h1>
+        <p className="mt-3 max-w-2xl text-sm leading-relaxed text-slate-400">
+          {t.heroDescription}
+        </p>
+      </header>
+
+      <section className="rounded-2xl border border-emerald-900/40 bg-emerald-950/20 p-6 shadow-xl sm:p-8">
+        <h2 className="text-sm font-semibold text-emerald-200/90">
+          {t.step1Title}
+        </h2>
+        <p className="mt-1 text-sm text-slate-400">{t.step1Body}</p>
+        <label
+          htmlFor="creator-id"
+          className="mt-4 block text-sm font-medium text-slate-300"
+        >
+          {t.yourCreatorId}
+        </label>
+        <input
+          id="creator-id"
+          type="text"
+          value={creatorIdInput}
+          onChange={(e) => setCreatorIdInput(e.target.value)}
+          placeholder={t.creatorIdPlaceholder}
+          className="mt-2 w-full max-w-xl rounded-xl border border-slate-700/80 bg-slate-950/60 px-4 py-3 text-sm text-slate-100 placeholder:text-slate-600 focus:border-emerald-500/50 focus:outline-none focus:ring-2 focus:ring-emerald-500/20"
+        />
+        {creatorLabel ? (
+          <div className="mt-4 rounded-xl border border-slate-800/80 bg-slate-950/50 p-4">
+            <p className="text-xs font-medium uppercase tracking-wide text-slate-500">
+              {t.globalAccessLink}
+            </p>
+            <code className="mt-2 block break-all text-sm text-emerald-300/95">
+              {origin}
+              {globalPath}
+            </code>
+            <button
+              type="button"
+              onClick={() => copyLink(globalPath)}
+              className="mt-3 rounded-lg border border-emerald-700/50 bg-emerald-950/40 px-4 py-2 text-xs font-medium text-emerald-100 transition hover:bg-emerald-900/40 focus:outline-none focus:ring-2 focus:ring-emerald-500/40"
             >
-              📥 下載成品圖 (新視窗開啟)
-            </a>
+              {copiedPath === globalPath ? t.copied : t.copyGlobalLink}
+            </button>
           </div>
+        ) : (
+          <p className="mt-4 text-sm text-slate-500">{t.enterCreatorIdHint}</p>
+        )}
+      </section>
+
+      <section className="mt-8 rounded-2xl border border-slate-800/80 bg-slate-900/40 p-6 shadow-xl shadow-black/20 backdrop-blur-sm sm:p-8">
+        <h2 className="text-sm font-semibold text-slate-200">{t.step2Title}</h2>
+        <p className="mt-1 text-sm text-slate-500">{t.step2Body}</p>
+        <label
+          htmlFor="members"
+          className="mt-4 block text-sm font-medium text-slate-300"
+        >
+          {t.memberNamesLabel}
+        </label>
+        <textarea
+          id="members"
+          rows={5}
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          placeholder={t.memberNamesPlaceholder}
+          className="mt-2 w-full resize-y rounded-xl border border-slate-700/80 bg-slate-950/60 px-4 py-3 text-sm text-slate-100 placeholder:text-slate-600 focus:border-cyan-500/60 focus:outline-none focus:ring-2 focus:ring-cyan-500/25"
+        />
+        <div className="mt-6 flex flex-wrap items-center gap-4">
+          <button
+            type="button"
+            onClick={generate}
+            className="inline-flex items-center justify-center rounded-xl bg-gradient-to-r from-cyan-500 to-teal-600 px-6 py-3 text-sm font-semibold text-slate-950 shadow-lg shadow-cyan-900/30 transition hover:from-cyan-400 hover:to-teal-500 focus:outline-none focus:ring-2 focus:ring-cyan-400/50"
+          >
+            {t.generateEncryptedLinks}
+          </button>
+          {rows.length > 0 && (
+            <>
+              <span className="text-sm text-slate-500">
+                {rows.length === 1
+                  ? t.linksReadyOne
+                  : linksReadyManyTemplate(rows.length, t.linksReadyMany)}
+              </span>
+              <button
+                type="button"
+                onClick={() => downloadCsv(rows, t)}
+                className="rounded-xl border border-slate-600 bg-slate-800/80 px-4 py-2 text-sm font-medium text-slate-200 transition hover:border-slate-500 hover:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-slate-500/40"
+              >
+                {t.downloadCsv}
+              </button>
+            </>
+          )}
         </div>
+      </section>
+
+      {rows.length > 0 && (
+        <section className="mt-10 overflow-hidden rounded-2xl border border-slate-800/80 bg-slate-900/30">
+          <div className="border-b border-slate-800/80 px-6 py-4">
+            <h2 className="text-sm font-semibold text-slate-200">
+              {t.individualTrackedTitle}
+            </h2>
+            <p className="mt-1 text-xs text-slate-500">
+              {t.individualTrackedHint}
+            </p>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[640px] text-left text-sm">
+              <thead>
+                <tr className="border-b border-slate-800/80 bg-slate-950/50 text-xs uppercase tracking-wider text-slate-500">
+                  <th className="px-6 py-3 font-medium">{t.tableMemberName}</th>
+                  <th className="px-6 py-3 font-medium">{t.tableUniqueLink}</th>
+                  <th className="px-6 py-3 font-medium">{t.tableActions}</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-800/60">
+                {rows.map((row) => (
+                  <tr
+                    key={row.path}
+                    className="transition-colors hover:bg-slate-800/30"
+                  >
+                    <td className="whitespace-nowrap px-6 py-4 font-medium text-slate-200">
+                      {row.name}
+                    </td>
+                    <td className="max-w-md px-6 py-4">
+                      <code className="break-all text-xs text-cyan-300/90">
+                        {row.path}
+                      </code>
+                    </td>
+                    <td className="whitespace-nowrap px-6 py-4">
+                      <button
+                        type="button"
+                        onClick={() => copyLink(row.path)}
+                        className="rounded-lg border border-slate-600 bg-slate-800/80 px-3 py-1.5 text-xs font-medium text-slate-200 transition hover:border-cyan-500/50 hover:bg-slate-800 hover:text-white focus:outline-none focus:ring-2 focus:ring-cyan-500/40"
+                      >
+                        {copiedPath === row.path ? t.copied : t.copyLink}
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
       )}
     </div>
   );
