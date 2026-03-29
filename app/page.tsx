@@ -1,6 +1,10 @@
 "use client";
 
-/** Creator Guard — root dashboard (`/`). Do not replace with create-next-app boilerplate. */
+/**
+ * CRITICAL: Root route `/` — Creator Guard dashboard only.
+ * Multi-language "Creator Guard: Digital Content Protection Shield" (lib/i18n/dictionary.ts).
+ * Do not restore legacy "AI Upscale" UI here.
+ */
 
 import { LanguageSelector } from "@/components/LanguageSelector";
 import { linksReadyManyTemplate } from "@/lib/i18n/dictionary";
