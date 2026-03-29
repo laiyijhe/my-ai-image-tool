@@ -1,5 +1,7 @@
 "use client";
 
+/** Creator Guard — root dashboard (`/`). Do not replace with create-next-app boilerplate. */
+
 import { LanguageSelector } from "@/components/LanguageSelector";
 import { linksReadyManyTemplate } from "@/lib/i18n/dictionary";
 import { useLanguage } from "@/lib/i18n/language-context";

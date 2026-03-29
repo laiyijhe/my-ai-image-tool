@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint ."
+    "lint": "eslint .",
+    "clean": "node -e \"require('fs').rmSync('.next',{recursive:true,force:true});\""
   },
   "engines": {
     "node": ">=18.18.0"
