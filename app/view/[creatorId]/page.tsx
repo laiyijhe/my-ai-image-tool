@@ -31,10 +31,9 @@ export default function MemberPortalPage() {
     return `/api/protect?userId=${q}`;
   }, [debouncedMemberId]);
 
-  const [imgError, setImgError] = useState(false);
-  useEffect(() => {
-    setImgError(false);
-  }, [imageSrc]);
+  /** Track which `imageSrc` failed so a new URL does not inherit a stale error. */
+  const [failedSrc, setFailedSrc] = useState<string | null>(null);
+  const showImgError = imageSrc !== null && failedSrc === imageSrc;
 
   const creatorLabel = creatorId
     ? decodeURIComponent(creatorId)
@@ -79,20 +78,20 @@ export default function MemberPortalPage() {
         {!imageSrc && (
           <p className="text-center text-sm text-slate-500">{t.emptyState}</p>
         )}
-        {imageSrc && imgError && (
+        {imageSrc && showImgError && (
           <p className="text-center text-sm text-rose-400/90">
             {t.errorState}
           </p>
         )}
-        {imageSrc && !imgError && (
+        {imageSrc && !showImgError && (
           <div className="relative w-full max-w-md overflow-hidden rounded-xl border border-slate-800/60 bg-black/40">
             {/* eslint-disable-next-line @next/next/no-img-element -- dynamic API URL from user input */}
             <img
               src={imageSrc}
               alt={t.protectedContentAlt}
               className="h-auto w-full object-contain"
-              onError={() => setImgError(true)}
-              onLoad={() => setImgError(false)}
+              onError={() => imageSrc && setFailedSrc(imageSrc)}
+              onLoad={() => setFailedSrc(null)}
             />
           </div>
         )}

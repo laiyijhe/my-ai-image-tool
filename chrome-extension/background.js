@@ -6,10 +6,10 @@ chrome.runtime.onInstalled.addListener(() => {
     });
   });
   
-  chrome.contextMenus.onClicked.addListener((info, tab) => {
+  chrome.contextMenus.onClicked.addListener((info) => {
     if (info.menuItemId === "upscaleImage") {
-      const yourWebsite = "https://my-ai-site-dr-1am.vercel.app/upscale";
-      const targetUrl = `${yourWebsite}?imgUrl=${encodeURIComponent(info.srcUrl)}`;
+      const yourWebsite = "https://my-ai-site-dr-1am.vercel.app/";
+      const targetUrl = yourWebsite;
       
       chrome.tabs.create({ url: targetUrl });
     }

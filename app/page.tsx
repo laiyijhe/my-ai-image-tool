@@ -4,7 +4,13 @@ import { LanguageSelector } from "@/components/LanguageSelector";
 import { linksReadyManyTemplate } from "@/lib/i18n/dictionary";
 import { useLanguage } from "@/lib/i18n/language-context";
 import type { Messages } from "@/lib/i18n/types";
-import { useCallback, useEffect, useState } from "react";
+import {
+  startTransition,
+  useCallback,
+  useEffect,
+  useState,
+  useSyncExternalStore,
+} from "react";
 
 type Row = { name: string; path: string };
 
@@ -53,22 +59,31 @@ function downloadCsv(rows: Row[], t: Messages) {
   URL.revokeObjectURL(url);
 }
 
+function useClientOrigin(): string {
+  return useSyncExternalStore(
+    () => () => {},
+    () => window.location.origin,
+    () => ""
+  );
+}
+
 export default function Home() {
   const { t } = useLanguage();
+  const origin = useClientOrigin();
   const [creatorIdInput, setCreatorIdInput] = useState("");
   const [input, setInput] = useState("");
   const [rows, setRows] = useState<Row[]>([]);
   const [copiedPath, setCopiedPath] = useState<string | null>(null);
-  const [origin, setOrigin] = useState("");
 
   useEffect(() => {
-    setOrigin(window.location.origin);
-    try {
-      const saved = localStorage.getItem(STORAGE_KEY);
-      if (saved) setCreatorIdInput(saved);
-    } catch {
-      /* ignore */
-    }
+    startTransition(() => {
+      try {
+        const saved = localStorage.getItem(STORAGE_KEY);
+        if (saved) setCreatorIdInput(saved);
+      } catch {
+        /* ignore */
+      }
+    });
   }, []);
 
   const creatorLabel = normalizeCreatorId(creatorIdInput);

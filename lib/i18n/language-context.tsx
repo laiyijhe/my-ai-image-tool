@@ -2,6 +2,7 @@
 
 import {
   createContext,
+  startTransition,
   useCallback,
   useContext,
   useEffect,
@@ -34,12 +35,14 @@ export function LanguageProvider({ children }: { children: ReactNode }) {
   const [locale, setLocaleState] = useState<Locale>("en");
 
   useEffect(() => {
-    try {
-      const saved = localStorage.getItem(STORAGE_KEY);
-      if (saved && isLocale(saved)) setLocaleState(saved);
-    } catch {
-      /* ignore */
-    }
+    startTransition(() => {
+      try {
+        const saved = localStorage.getItem(STORAGE_KEY);
+        if (saved && isLocale(saved)) setLocaleState(saved);
+      } catch {
+        /* ignore */
+      }
+    });
   }, []);
 
   const setLocale = useCallback((next: Locale) => {

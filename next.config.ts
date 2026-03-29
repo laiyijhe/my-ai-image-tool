@@ -1,7 +1,8 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  /* config options here */
+  /** Jimp pulls many subpackages; keep resolution predictable on Vercel. */
+  serverExternalPackages: ["jimp"],
 };
 
 export default nextConfig;
