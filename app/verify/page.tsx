@@ -18,6 +18,8 @@ function mapVerifyFailureCode(code: string | undefined, tr: Messages): string {
       return tr.verifyErrPayloadTruncated;
     case "utf8_corrupt":
       return tr.verifyErrUtf8Corrupt;
+    case "capacity":
+      return tr.verifyErrCapacity;
     case "decode_failed":
       return tr.verifyErrDecodeFailed;
     default:
@@ -102,6 +104,9 @@ export default function VerifyPage() {
           <h1 className="mt-3 text-2xl font-semibold tracking-tight text-white sm:text-3xl">
             {t.verifyPageTitle}
           </h1>
+          <p className="mx-auto mt-3 inline-flex max-w-md items-center justify-center rounded-full border border-cyan-500/25 bg-cyan-500/[0.07] px-3 py-1 text-[11px] font-medium tracking-wide text-cyan-300/90">
+            {t.highResistProtectionBadge}
+          </p>
           <p className="mx-auto mt-3 max-w-md text-sm leading-relaxed text-slate-500">
             {t.verifyPageSubtitle}
           </p>

@@ -28,7 +28,7 @@ export default function MemberPortalPage() {
   const imageSrc = useMemo(() => {
     if (!debouncedMemberId) return null;
     const q = encodeURIComponent(debouncedMemberId);
-    return `/api/protect?userId=${q}`;
+    return `/api/protect?memberId=${q}`;
   }, [debouncedMemberId]);
 
   /** Track which `imageSrc` failed so a new URL does not inherit a stale error. */

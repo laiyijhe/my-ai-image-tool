@@ -21,6 +21,24 @@ import {
 
 type Row = { name: string; path: string };
 
+type MassRow = {
+  key: string;
+  memberName: string;
+  imageFileName: string;
+  previewUrl: string;
+  path: string;
+};
+
+type GalleryItem = { file: File; previewUrl: string };
+
+function replaceTpl(s: string, vars: Record<string, string>): string {
+  let out = s;
+  for (const [k, v] of Object.entries(vars)) {
+    out = out.split(`{${k}}`).join(v);
+  }
+  return out;
+}
+
 const STORAGE_KEY = "creatorGuardCreatorId";
 
 const CSV_HEADER_RE =
@@ -101,11 +119,49 @@ function downloadCsv(rows: Row[], t: Messages) {
   URL.revokeObjectURL(url);
 }
 
+function downloadMassCsv(rows: MassRow[], t: Messages, origin: string) {
+  if (typeof window === "undefined" || rows.length === 0) return;
+  const header =
+    [
+      escapeCsvCell(t.csvHeaderMemberName),
+      escapeCsvCell(t.massCsvHeaderImage),
+      escapeCsvCell(t.csvHeaderFullUrl),
+      escapeCsvCell(t.csvHeaderPath),
+    ].join(",") + "\n";
+  const lines = rows.map((r) => {
+    const full = `${origin}${r.path}`;
+    return [
+      escapeCsvCell(r.memberName),
+      escapeCsvCell(r.imageFileName),
+      escapeCsvCell(full),
+      escapeCsvCell(r.path),
+    ].join(",");
+  });
+  const blob = new Blob([header + lines.join("\n")], {
+    type: "text/csv;charset=utf-8;",
+  });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `creator-guard-mass-${new Date().toISOString().slice(0, 10)}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
 function useClientOrigin(): string {
   return useSyncExternalStore(
     () => () => {},
     () => window.location.origin,
     () => ""
+  );
+}
+
+function SpinnerRing({ className }: { className?: string }) {
+  return (
+    <div
+      className={`shrink-0 animate-spin rounded-full border-2 border-cyan-400/25 border-t-cyan-400 ${className ?? "h-5 w-5"}`}
+      aria-hidden
+    />
   );
 }
 
@@ -130,14 +186,24 @@ export default function Home() {
   const { t } = useLanguage();
   const origin = useClientOrigin();
   const fileRef = useRef<HTMLInputElement>(null);
+  const galleryInputRef = useRef<HTMLInputElement>(null);
   const [creatorIdInput, setCreatorIdInput] = useState("");
   const [input, setInput] = useState("");
   const [rows, setRows] = useState<Row[]>([]);
+  const [massRows, setMassRows] = useState<MassRow[]>([]);
+  const [galleryItems, setGalleryItems] = useState<GalleryItem[]>([]);
+  const [massPhase, setMassPhase] = useState<
+    "idle" | "uploading" | "done" | "error"
+  >("idle");
+  const [massProgress, setMassProgress] = useState({ done: 0, total: 0 });
+  const [massError, setMassError] = useState<string | null>(null);
   const [copiedPath, setCopiedPath] = useState<string | null>(null);
   const [copyPopPath, setCopyPopPath] = useState<string | null>(null);
   const [dragOver, setDragOver] = useState(false);
+  const [massDragOver, setMassDragOver] = useState(false);
   const [uploadLabel, setUploadLabel] = useState<string | null>(null);
   const [needMembers, setNeedMembers] = useState(false);
+  const [needMassImages, setNeedMassImages] = useState(false);
 
   useEffect(() => {
     startTransition(() => {
@@ -191,6 +257,32 @@ export default function Home() {
     reader.readAsText(file, "UTF-8");
   }, []);
 
+  const addGalleryFromFiles = useCallback((files: FileList | File[]) => {
+    const imgs = Array.from(files).filter(
+      (f) =>
+        f.type.startsWith("image/") ||
+        /\.(jpe?g|png|gif|webp|avif|heic)$/i.test(f.name)
+    );
+    if (imgs.length === 0) return;
+    setGalleryItems((prev) => {
+      const next = [...prev];
+      for (const file of imgs) {
+        next.push({ file, previewUrl: URL.createObjectURL(file) });
+      }
+      return next;
+    });
+  }, []);
+
+  const clearGallery = useCallback(() => {
+    setGalleryItems((prev) => {
+      prev.forEach((p) => URL.revokeObjectURL(p.previewUrl));
+      return [];
+    });
+    setMassRows([]);
+    setMassPhase("idle");
+    setMassError(null);
+  }, []);
+
   const onDrop = useCallback(
     (e: React.DragEvent) => {
       e.preventDefault();
@@ -214,6 +306,9 @@ export default function Home() {
       id = makeDefaultCreatorId();
       setCreatorIdInput(id);
     }
+    setMassRows([]);
+    setMassPhase("idle");
+    setMassError(null);
     setRows(
       names.map((name) => ({
         name,
@@ -221,6 +316,71 @@ export default function Home() {
       }))
     );
   }, [creatorIdInput, input]);
+
+  const generateMassBatches = useCallback(async () => {
+    const names = parseMemberListFromText(input);
+    if (names.length === 0) {
+      setNeedMembers(true);
+      window.setTimeout(() => setNeedMembers(false), 3800);
+      return;
+    }
+    if (galleryItems.length === 0) {
+      setNeedMassImages(true);
+      window.setTimeout(() => setNeedMassImages(false), 3800);
+      return;
+    }
+
+    setRows([]);
+    setMassRows([]);
+    setMassError(null);
+    setMassPhase("uploading");
+    setMassProgress({ done: 0, total: galleryItems.length });
+
+    try {
+      const urls: string[] = [];
+      for (let i = 0; i < galleryItems.length; i++) {
+        const fd = new FormData();
+        fd.set("file", galleryItems[i]!.file);
+        const res = await fetch("/api/protect/gallery-upload", {
+          method: "POST",
+          body: fd,
+        });
+        const data = (await res.json().catch(() => ({}))) as {
+          error?: string;
+          url?: string;
+        };
+        if (!res.ok) {
+          if (res.status === 503 || data.error === "blob_not_configured") {
+            throw new Error(t.massBlobUnavailable);
+          }
+          throw new Error(t.massUploadFailed);
+        }
+        if (!data.url) throw new Error(t.massUploadFailed);
+        urls.push(data.url);
+        setMassProgress({ done: i + 1, total: galleryItems.length });
+      }
+
+      const nextRows: MassRow[] = [];
+      for (const member of names) {
+        for (let j = 0; j < galleryItems.length; j++) {
+          const gi = galleryItems[j]!;
+          const hostedUrl = urls[j]!;
+          nextRows.push({
+            key: `${member}|${j}|${gi.file.name}`,
+            memberName: member,
+            imageFileName: gi.file.name,
+            previewUrl: gi.previewUrl,
+            path: `/api/protect?memberId=${encodeURIComponent(member)}&imageUrl=${encodeURIComponent(hostedUrl)}`,
+          });
+        }
+      }
+      setMassRows(nextRows);
+      setMassPhase("done");
+    } catch (e) {
+      setMassPhase("error");
+      setMassError(e instanceof Error ? e.message : t.massUploadFailed);
+    }
+  }, [galleryItems, input, t.massBlobUnavailable, t.massUploadFailed]);
 
   const regenCreatorId = useCallback(() => {
     setCreatorIdInput(makeDefaultCreatorId());
@@ -242,6 +402,9 @@ export default function Home() {
           <h1 className="mt-3 text-balance text-2xl font-semibold tracking-tight text-white sm:text-3xl">
             {t.heroTitle}
           </h1>
+          <p className="mx-auto mt-3 inline-flex max-w-md items-center justify-center rounded-full border border-cyan-500/25 bg-cyan-500/[0.07] px-3 py-1 text-[11px] font-medium tracking-wide text-cyan-300/90">
+            {t.highResistProtectionBadge}
+          </p>
           <p className="mx-auto mt-3 max-w-md text-sm leading-relaxed text-slate-500">
             {t.heroTagline}
           </p>
@@ -386,14 +549,258 @@ export default function Home() {
             <button
               type="button"
               onClick={generateEverything}
-              className="mt-6 flex h-14 w-full items-center justify-center rounded-2xl bg-gradient-to-r from-cyan-400 via-cyan-500 to-teal-500 text-[15px] font-semibold text-slate-950 shadow-xl shadow-cyan-900/25 transition hover:brightness-105 active:scale-[0.99]"
+              disabled={massPhase === "uploading"}
+              className="mt-6 flex h-14 w-full items-center justify-center rounded-2xl bg-gradient-to-r from-cyan-400 via-cyan-500 to-teal-500 text-[15px] font-semibold text-slate-950 shadow-xl shadow-cyan-900/25 transition hover:brightness-105 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-45"
             >
               {t.generateAllCta}
             </button>
           </section>
 
+          {/* Mass protection gallery */}
+          <section className="rounded-[1.35rem] border border-white/[0.08] bg-slate-900/60 p-5 shadow-[0_24px_64px_-24px_rgba(0,0,0,0.7)] backdrop-blur-xl sm:p-6">
+            <div className="mb-4">
+              <h2 className="text-sm font-semibold tracking-tight text-white">
+                {t.massProtectionTitle}
+              </h2>
+              <p className="mt-1 text-xs leading-relaxed text-slate-500">
+                {t.massProtectionHint}
+              </p>
+            </div>
+
+            <button
+              type="button"
+              onDragOver={(e) => {
+                e.preventDefault();
+                setMassDragOver(true);
+              }}
+              onDragLeave={() => setMassDragOver(false)}
+              onDrop={(e) => {
+                e.preventDefault();
+                setMassDragOver(false);
+                addGalleryFromFiles(e.dataTransfer.files);
+              }}
+              onClick={() => galleryInputRef.current?.click()}
+              className={`flex w-full flex-col items-center justify-center rounded-2xl border-2 border-dashed px-4 py-10 transition-all duration-200 ${
+                massDragOver
+                  ? "border-violet-400/55 bg-violet-500/10"
+                  : "border-white/[0.1] bg-black/20 hover:border-white/20 hover:bg-white/[0.03]"
+              }`}
+            >
+              <div className="mb-2 flex h-12 w-12 items-center justify-center rounded-2xl bg-white/[0.06] text-violet-400/90">
+                <svg
+                  width="24"
+                  height="24"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.6"
+                  strokeLinecap="round"
+                >
+                  <rect x="3" y="3" width="7" height="7" rx="1" />
+                  <rect x="14" y="3" width="7" height="7" rx="1" />
+                  <rect x="3" y="14" width="7" height="7" rx="1" />
+                  <rect x="14" y="14" width="7" height="7" rx="1" />
+                </svg>
+              </div>
+              <span className="text-sm font-medium text-slate-200">
+                {t.massGalleryDropTitle}
+              </span>
+              <span className="mt-1 text-center text-xs text-slate-500">
+                {t.massGalleryHint}
+              </span>
+              <span className="mt-4 rounded-full border border-white/10 bg-white/[0.05] px-4 py-1.5 text-xs font-medium text-slate-400">
+                {t.massGalleryBrowse}
+              </span>
+              {galleryItems.length > 0 ? (
+                <p className="mt-3 text-[11px] font-medium text-violet-400/85">
+                  {replaceTpl(t.massImagesSelected, {
+                    count: String(galleryItems.length),
+                  })}
+                </p>
+              ) : null}
+            </button>
+            <input
+              ref={galleryInputRef}
+              type="file"
+              accept="image/*"
+              multiple
+              className="hidden"
+              onChange={(e) => {
+                const list = e.target.files;
+                if (list?.length) addGalleryFromFiles(list);
+                e.target.value = "";
+              }}
+            />
+
+            {galleryItems.length > 0 ? (
+              <div className="mt-4 flex flex-wrap gap-2">
+                {galleryItems.map((g, idx) => (
+                  <div
+                    key={`${g.previewUrl}-${idx}`}
+                    className="flex items-center gap-2 rounded-xl border border-white/[0.08] bg-black/25 py-1.5 pl-1.5 pr-2"
+                  >
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      src={g.previewUrl}
+                      alt=""
+                      className="h-10 w-10 rounded-lg object-cover"
+                    />
+                    <span className="max-w-[140px] truncate text-[11px] text-slate-400">
+                      {g.file.name}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+
+            <div className="mt-4 flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={clearGallery}
+                disabled={galleryItems.length === 0 || massPhase === "uploading"}
+                className="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1.5 text-xs font-medium text-slate-400 transition hover:bg-white/[0.08] disabled:opacity-40"
+              >
+                {t.massGalleryClear}
+              </button>
+            </div>
+
+            {needMassImages ? (
+              <p className="mt-3 text-center text-sm text-amber-400/90">
+                {t.massNeedImagesHint}
+              </p>
+            ) : null}
+
+            {massPhase === "uploading" ? (
+              <div className="mt-5 space-y-3 rounded-2xl border border-cyan-500/20 bg-cyan-950/20 p-4">
+                <div className="flex items-center gap-3">
+                  <SpinnerRing />
+                  <span className="text-sm text-cyan-200/90">
+                    {t.massUploadingLabel}
+                  </span>
+                </div>
+                <div className="h-1.5 w-full overflow-hidden rounded-full bg-white/10">
+                  <div
+                    className="h-full rounded-full bg-gradient-to-r from-cyan-400 to-teal-500 transition-[width] duration-300 ease-out"
+                    style={{
+                      width: `${massProgress.total ? (100 * massProgress.done) / massProgress.total : 0}%`,
+                    }}
+                  />
+                </div>
+                <p className="text-center text-[11px] text-slate-500">
+                  {replaceTpl(t.massUploadProgress, {
+                    done: String(massProgress.done),
+                    total: String(massProgress.total),
+                  })}
+                </p>
+              </div>
+            ) : null}
+
+            {massPhase === "error" && massError ? (
+              <p className="mt-4 rounded-xl border border-red-500/25 bg-red-950/30 px-3 py-2 text-sm text-red-200/90">
+                {massError}
+              </p>
+            ) : null}
+
+            <button
+              type="button"
+              onClick={() => void generateMassBatches()}
+              disabled={massPhase === "uploading"}
+              className="mt-6 flex h-14 w-full items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-violet-500 via-violet-600 to-fuchsia-600 text-[15px] font-semibold text-white shadow-xl shadow-violet-950/40 transition hover:brightness-105 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-45"
+            >
+              {massPhase === "uploading" ? (
+                <>
+                  <SpinnerRing className="h-5 w-5 border-white/30 border-t-white" />
+                  <span>{t.massUploadingLabel}</span>
+                </>
+              ) : (
+                t.massGenerateBatchesCta
+              )}
+            </button>
+          </section>
+
           {/* Results */}
-          {rows.length > 0 ? (
+          {massRows.length > 0 ? (
+            <section className="space-y-4">
+              <div className="flex flex-wrap items-center justify-between gap-3 px-1">
+                <p className="text-sm text-slate-400">
+                  {replaceTpl(t.massLinksReady, {
+                    count: String(massRows.length),
+                  })}
+                </p>
+                <button
+                  type="button"
+                  onClick={() => downloadMassCsv(massRows, t, origin)}
+                  className="rounded-full border border-white/10 bg-white/[0.05] px-4 py-2 text-xs font-medium text-slate-300 transition hover:bg-white/[0.09]"
+                >
+                  {t.massDownloadCsvAll}
+                </button>
+              </div>
+              <div className="overflow-x-auto rounded-2xl border border-white/[0.06] bg-slate-900/50">
+                <table className="w-full min-w-[520px] border-collapse text-left text-sm">
+                  <thead>
+                    <tr className="border-b border-white/[0.06] text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+                      <th className="px-4 py-3">{t.massTableMember}</th>
+                      <th className="px-4 py-3">{t.massTableImage}</th>
+                      <th className="px-4 py-3 text-right">
+                        {t.massTableLink}
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {massRows.map((row) => {
+                      const isCopied = copiedPath === row.path;
+                      const showPop = copyPopPath === row.path;
+                      return (
+                        <tr
+                          key={row.key}
+                          className="border-b border-white/[0.04] last:border-0"
+                        >
+                          <td className="px-4 py-3 align-middle font-medium text-white">
+                            {row.memberName}
+                          </td>
+                          <td className="px-4 py-3 align-middle">
+                            <div className="flex items-center gap-3">
+                              {/* eslint-disable-next-line @next/next/no-img-element */}
+                              <img
+                                src={row.previewUrl}
+                                alt=""
+                                className="h-14 w-14 shrink-0 rounded-xl border border-white/[0.08] object-cover"
+                              />
+                              <span className="max-w-[120px] truncate text-xs text-slate-500 sm:max-w-[180px]">
+                                {row.imageFileName}
+                              </span>
+                            </div>
+                          </td>
+                          <td className="px-4 py-3 align-middle text-right">
+                            <button
+                              type="button"
+                              onClick={() => copyLink(row.path)}
+                              className={`relative inline-flex min-w-[7.5rem] items-center justify-center gap-2 rounded-full px-4 py-2 text-xs font-semibold transition-all duration-300 ${
+                                isCopied
+                                  ? "bg-emerald-500/20 text-emerald-200 ring-2 ring-emerald-400/45"
+                                  : "bg-white/[0.1] text-slate-100 ring-1 ring-white/10 hover:bg-white/[0.14]"
+                              } ${showPop ? "copy-success-pop" : ""}`}
+                            >
+                              {isCopied ? (
+                                <>
+                                  <CheckIcon className="h-3.5 w-3.5 text-emerald-300" />
+                                  <span>{t.copied}</span>
+                                </>
+                              ) : (
+                                <span>{t.massCopyUniqueLink}</span>
+                              )}
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+          ) : null}
+
+          {rows.length > 0 && massRows.length === 0 ? (
             <section className="space-y-4">
               <div className="flex flex-wrap items-center justify-between gap-3 px-1">
                 <p className="text-sm text-slate-400">

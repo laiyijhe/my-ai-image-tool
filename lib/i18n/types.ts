@@ -41,6 +41,8 @@ export type Messages = {
   languageLabel: string;
   /** Simplified dashboard (Apple-style) */
   heroTagline: string;
+  /** Short badge: frequency-domain / high-resistive watermark */
+  highResistProtectionBadge: string;
   portalYourId: string;
   creatorTapToEdit: string;
   creatorNewId: string;
@@ -52,6 +54,27 @@ export type Messages = {
   generateAllCta: string;
   needMembersHint: string;
   regenCreatorAria: string;
+  /** Mass protection (gallery × members) */
+  massProtectionTitle: string;
+  massProtectionHint: string;
+  massGalleryDropTitle: string;
+  massGalleryHint: string;
+  massGalleryBrowse: string;
+  massGalleryClear: string;
+  massImagesSelected: string;
+  massGenerateBatchesCta: string;
+  massNeedImagesHint: string;
+  massUploadingLabel: string;
+  massUploadProgress: string;
+  massBlobUnavailable: string;
+  massUploadFailed: string;
+  massTableMember: string;
+  massTableImage: string;
+  massTableLink: string;
+  massCopyUniqueLink: string;
+  massLinksReady: string;
+  massDownloadCsvAll: string;
+  massCsvHeaderImage: string;
   /** Leak verification */
   verifyToolLink: string;
   verifyPageTitle: string;
@@ -70,4 +93,5 @@ export type Messages = {
   verifyErrPayloadTruncated: string;
   verifyErrUtf8Corrupt: string;
   verifyErrDecodeFailed: string;
+  verifyErrCapacity: string;
 };

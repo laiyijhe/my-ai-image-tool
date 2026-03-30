@@ -1,8 +1,8 @@
 import { Jimp } from "jimp";
 import {
-  extractMemberIdFromBitmapDetailed,
+  extractMemberIdDctDetailed,
   type WatermarkExtractFailureCode,
-} from "@/lib/watermark-lsb";
+} from "@/lib/watermark-dct";
 import { NextResponse } from "next/server";
 
 export const runtime = "nodejs";
@@ -11,12 +11,13 @@ const MAX_UPLOAD_BYTES = 12 * 1024 * 1024;
 
 const DEBUG_MESSAGES: Record<WatermarkExtractFailureCode, string> = {
   magic_missing:
-    "Magic header missing — not a Creator Guard v2 image, or pixels were altered / recompressed.",
+    "DCT watermark header missing — not from Creator Guard (v3), or the image was too heavily edited / scaled down.",
   unsupported_version:
-    "Unsupported watermark version (expected v2 / 2-bit blue). Re-export a fresh PNG from a protected link.",
+    "Older LSB watermark (v1/v2). Download a fresh image from a protected link (v3 DCT).",
   length_invalid: "Data corrupted: invalid length field in payload.",
   payload_truncated: "Data corrupted: payload was cut off (truncated bit stream).",
   utf8_corrupt: "Data corrupted: Member ID bytes are not valid UTF-8.",
+  capacity: "Image too small or too uniform to hold the frequency-domain watermark.",
 };
 
 export async function POST(request: Request) {
@@ -48,7 +49,7 @@ export async function POST(request: Request) {
   try {
     const ab = await file.arrayBuffer();
     const image = await Jimp.read(Buffer.from(ab));
-    const result = extractMemberIdFromBitmapDetailed(image);
+    const result = extractMemberIdDctDetailed(image);
 
     if (result.ok) {
       return NextResponse.json({ ok: true, userId: result.userId });
