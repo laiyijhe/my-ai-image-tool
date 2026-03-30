@@ -303,6 +303,7 @@ export const dictionary: Record<Locale, Messages> = {
     massTableMember: "会员",
     massTableImage: "图片",
     massTableLink: "专属链接",
+    massCopyUniqueLink: "复制专属链接",
     massLinksReady: "已生成 {count} 个追踪链接",
     massDownloadCsvAll: "下载全部链接（CSV）",
     massCsvHeaderImage: "图片文件名",
