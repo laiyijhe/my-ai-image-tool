@@ -34,6 +34,7 @@ function debugStringOffsets0to7(
 }
 
 export async function POST(request: Request) {
+  console.log("API V4 IS LIVE");
   console.log("--- API_HIT_START verify-v4 ---");
   /** Always 200 — avoid browsers/devtools flagging JSON as a “failed” non-OK fetch. */
   const S = 200 as const;
