@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { Jimp } from "jimp";
+import { PNGColorType, PNGFilterType } from "@jimp/js-png";
 import { isAllowedProtectSourceUrl } from "@/lib/protect-source-url";
 import { embedMemberIdDct } from "@/lib/watermark-dct";
 import { type NextRequest, NextResponse } from "next/server";
@@ -143,8 +144,35 @@ export async function GET(request: NextRequest) {
   try {
     const image = base.clone();
     embedMemberIdDct(image, embeddedId);
-    /** Truecolor PNG (color type 2) — no alpha chunk; RGBA bitmap is read correctly via default inputColorType. */
-    const buf = await image.getBuffer("image/png", { colorType: 2 });
+
+    /**
+     * TEMP block-sync probe: force (0,0) to opaque red. Extract should see
+     * `data[0..3] = [255,0,0,255]` if bitmap row-major RGBA matches embed grid origin.
+     * Remove after debugging `magic_missing` / block offset.
+     */
+    {
+      const { data, width } = image.bitmap;
+      data[0] = 255;
+      data[1] = 0;
+      data[2] = 0;
+      data[3] = 255;
+      console.log("[Creator Guard protect] TEMP_pixel00_red_marker", {
+        data0_R: data[0],
+        data1_G: data[1],
+        data2_B: data[2],
+        data3_A: data[3],
+        width,
+      });
+    }
+
+    /**
+     * Truecolor RGB — PNG color type 2, 8 bits/channel × 3 = 24-bit RGB (no palette / indexed color).
+     * Filter NONE avoids encoder “auto” filter heuristics that might interact oddly with fragile coeffs.
+     */
+    const buf = await image.getBuffer("image/png", {
+      colorType: PNGColorType.COLOR,
+      filterType: PNGFilterType.NONE,
+    });
     const body = new Uint8Array(buf);
 
     return new NextResponse(body, {
@@ -153,7 +181,7 @@ export async function GET(request: NextRequest) {
         /** Strict binary PNG — no charset; prevents MIME sniffing issues. */
         "Content-Type": "image/png",
         "X-Content-Type-Options": "nosniff",
-        "Cache-Control": "private, no-store",
+        "Cache-Control": "no-cache",
         /** Debug which id path ran (check Network → Response headers on /api/protect). */
         "X-Creator-Guard-Embed-Source": idSource,
       },

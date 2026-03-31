@@ -94,4 +94,5 @@ export type Messages = {
   verifyErrUtf8Corrupt: string;
   verifyErrDecodeFailed: string;
   verifyErrCapacity: string;
+  verifyErrSyncOffset: string;
 };

@@ -123,6 +123,8 @@ export const dictionary: Record<Locale, Messages> = {
     verifyErrDecodeFailed: "Server could not read this image file.",
     verifyErrCapacity:
       "Image too small or too flat to read the frequency watermark. Try a larger or more detailed photo.",
+    verifyErrSyncOffset:
+      "Top-left pixel does not match the protect sync marker — fix canvas/stride/offset, or turn off CREATOR_GUARD_ENFORCE_SYNC_MARKER.",
   },
   "zh-TW": {
     brandName: "Creator Guard",
@@ -226,6 +228,8 @@ export const dictionary: Record<Locale, Messages> = {
     verifyErrDecodeFailed: "伺服器無法讀取此圖片檔。",
     verifyErrCapacity:
       "圖片過小或過於平坦，無法讀取頻域浮水印。請改用較大或細節較多的照片。",
+    verifyErrSyncOffset:
+      "左上角像素與保護同步標記不符 — 請修正畫布／步進／偏移，或關閉 CREATOR_GUARD_ENFORCE_SYNC_MARKER。",
   },
   "zh-CN": {
     brandName: "Creator Guard",
@@ -329,6 +333,8 @@ export const dictionary: Record<Locale, Messages> = {
     verifyErrDecodeFailed: "服务器无法读取此图像文件。",
     verifyErrCapacity:
       "图像过小或过于平坦，无法读取频域水印。请换用更大或细节更多的照片。",
+    verifyErrSyncOffset:
+      "左上角像素与保护同步标记不符 — 请修正画布/步进/偏移，或关闭 CREATOR_GUARD_ENFORCE_SYNC_MARKER。",
   },
   ja: {
     brandName: "Creator Guard",
@@ -435,6 +441,8 @@ export const dictionary: Record<Locale, Messages> = {
     verifyErrDecodeFailed: "サーバーがこの画像を読めませんでした。",
     verifyErrCapacity:
       "画像が小さすぎるか平坦すぎて周波数透かしを読めません。より大きく詳細のある写真を試してください。",
+    verifyErrSyncOffset:
+      "左上ピクセルが保護同期マーカーと一致しません。キャンバス／ストライド／オフセットを修正するか、CREATOR_GUARD_ENFORCE_SYNC_MARKER をオフにしてください。",
   },
   ko: {
     brandName: "Creator Guard",
@@ -541,6 +549,8 @@ export const dictionary: Record<Locale, Messages> = {
     verifyErrDecodeFailed: "서버가 이 이미지를 읽지 못했습니다.",
     verifyErrCapacity:
       "이미지가 너무 작거나 단조로워 주파수 워터마크를 읽을 수 없습니다. 더 크고 디테일이 있는 사진을 시도하세요.",
+    verifyErrSyncOffset:
+      "왼쪽 위 픽셀이 보호 동기 마커와 일치하지 않습니다. 캔버스/스트라이드/오프셋을 수정하거나 CREATOR_GUARD_ENFORCE_SYNC_MARKER를 끄세요.",
   },
 };
 

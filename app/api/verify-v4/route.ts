@@ -1,6 +1,7 @@
 import { Jimp } from "jimp";
 import {
   extractMemberIdDctDetailed,
+  type BitShiftHex0to7,
   type WatermarkVerifyExtractDebug,
 } from "@/lib/watermark-dct";
 import { NextResponse } from "next/server";
@@ -20,10 +21,10 @@ function debugStringOffsets0to7(
   if (!debug?.bitShiftHex0to7 || typeof debug.bitShiftHex0to7 !== "object") {
     return "NO_OFFSET_DATA";
   }
-  const row = debug.bitShiftHex0to7 as Record<string, unknown>;
+  const row: BitShiftHex0to7 = debug.bitShiftHex0to7;
   const parts: string[] = [];
   for (let i = 0; i < 8; i++) {
-    const key = `offset_${i}_hex`;
+    const key = `offset_${i}_hex` as keyof BitShiftHex0to7;
     const v = row[key];
     parts.push(
       typeof v === "string" ? v : v == null ? "null" : String(v)
