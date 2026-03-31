@@ -21,7 +21,10 @@ export default function DebugVerifyPage() {
       const fd = new FormData();
       fd.set("file", file);
       try {
-        const res = await fetch("/api/verify", { method: "POST", body: fd });
+        const res = await fetch(
+          `/api/verify?t=${Date.now()}&r=${Math.random().toString(36).slice(2, 10)}`,
+          { method: "POST", body: fd }
+        );
         let data: unknown;
         try {
           data = await res.json();

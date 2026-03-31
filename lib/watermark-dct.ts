@@ -61,42 +61,267 @@ const EMBED_GAP = 60;
  * etc.) we still use the **sign** of the gap so attenuated marks do not collapse to all-zero bits.
  */
 const EXTRACT_GAP = 2;
+/**
+ * Inside the hysteresis band `|gap| ≤ EXTRACT_GAP`, treat small |gap| as **0** (extract path only).
+ * Avoids noise pushing weak positives past `gap > 0` → excessive 1s in hex (e.g. F7-heavy heads).
+ */
+const EXTRACT_GAP_AMBIGUOUS_SIGN_EPSILON = 1.0;
 const GAP_ENFORCE_MAX_STEPS = 192;
 
 /** Same logical payload bit is written to 3 consecutive physical stream slots (then cyclic). */
 const TRIPLE_REDUNDANCY = 3;
 
 /**
- * After triple-collapse, skip this many leading logical bits before interpreting magic + length + id
- * (decode pipeline offset vs embed; aligns CGW 0x03 read window).
+ * Fallback collapsed-skip if brute-force scan (start indices 0..`MAGIC_BRUTE_FORCE_MAX_START_BIT`)
+ * finds no `0x43475703` within Hamming distance `MAGIC_HAMMING_MAX_ERRORS` MSB-first.
+ * Discovered index `i` becomes `magicSkipBits` for `sliceCollapsedPayloadBits` (preamble length).
  */
-const EXTRACT_COLLAPSED_LEADING_SKIP_BITS = 5;
+const EXTRACT_COLLAPSED_LEADING_SKIP_FALLBACK = 5;
 
-function collapsedLogicalBitCountForLen(len: number): number {
-  return (6 + len) * 8 + EXTRACT_COLLAPSED_LEADING_SKIP_BITS;
+/**
+ * Extract-only: XOR every gap-decoded bit (embed / `readBitFromBlock` unchanged).
+ * When true, collapsed bits are already polarity-aligned to the embed protocol; brute-force must not
+ * apply a second whole-stream invert (`streamInvertCollapsed`) for the same correction.
+ * Set **false** when diagnostics show bit-saturation (too many 1s / F7-heavy magic hex).
+ */
+const EXTRACT_INVERT_DCT_GAP_DECODER = false;
+
+/** Inclusive max start index for magic alignment scan: `i` = 0 … 128. */
+const MAGIC_BRUTE_FORCE_MAX_START_BIT = 128;
+
+/** Max Hamming distance vs `WATERMARK_MAGIC_V3` first 32 bits to accept a magic window. */
+const MAGIC_HAMMING_MAX_ERRORS = 16;
+
+/** Hamming distance at `collapsed[start..start+32)` vs `magic32`, optional per-bit invert before compare. */
+function hamming32VsMagic(
+  collapsed: number[],
+  start: number,
+  magic32: number[],
+  invertStreamBits: boolean
+): number {
+  let errors = 0;
+  for (let j = 0; j < 32; j++) {
+    const b = (collapsed[start + j]! & 1) ^ (invertStreamBits ? 1 : 0);
+    if (b !== magic32[j]!) errors++;
+  }
+  return errors;
+}
+
+/** Same 4 magic bytes as stream bits but LSB-first within each byte (bit order inside byte reversed). */
+function watermarkMagicV3FirstFourBytesLsbFirstBits(): number[] {
+  const bits: number[] = [];
+  for (let i = 0; i < 4; i++) {
+    const byte = WATERMARK_MAGIC_V3[i]!;
+    for (let j = 0; j < 8; j++) {
+      bits.push((byte >> j) & 1);
+    }
+  }
+  return bits;
+}
+
+function collapsedBitsPrefixBinaryString(
+  collapsedBits: number[],
+  bitCount: number
+): string {
+  const n = Math.min(bitCount, collapsedBits.length);
+  let s = "";
+  for (let i = 0; i < n; i++) {
+    s += (collapsedBits[i]! & 1) ? "1" : "0";
+  }
+  return s;
+}
+
+type MagicSkipCandidate = {
+  err: number;
+  streamInvert: boolean;
+  magicByteRev: boolean;
+};
+
+type MagicBruteForceScanStats = {
+  bestHamming: number;
+  bestIndex: number;
+};
+
+type BruteForceMagicSkipResult = {
+  match: { offset: number; streamInvert: boolean } | null;
+  scanStats: MagicBruteForceScanStats;
+};
+
+/**
+ * Scan `bits[i..i+32)` vs CGW\\x03 with Hamming ≤ `MAGIC_HAMMING_MAX_ERRORS`.
+ * Tries MSB-first-per-byte magic and LSB-first-per-byte magic; optional stream invert when
+ * `!gapDecoderInverts`. Tracks global best Hamming for failure diagnostics.
+ */
+function bruteForceMagicSkip0To32(
+  collapsedBits: number[],
+  gapDecoderInverts: boolean
+): BruteForceMagicSkipResult {
+  console.log(
+    "[Creator Guard DCT] bruteForceMagicSkip0To32 collapsedBits.length:",
+    collapsedBits.length
+  );
+
+  const magic32Msb = payloadBufferToBigEndianBits(
+    WATERMARK_MAGIC_V3.subarray(0, 4)
+  );
+  const magic32Lsb = watermarkMagicV3FirstFourBytesLsbFirstBits();
+
+  let globalBestErr = 33;
+  let globalBestIndex = -1;
+
+  function noteGlobalBest(err: number, idx: number): void {
+    if (err < globalBestErr) {
+      globalBestErr = err;
+      globalBestIndex = idx;
+    }
+  }
+
+  function pickAcceptable(
+    candidates: MagicSkipCandidate[]
+  ): MagicSkipCandidate | null {
+    const ok = candidates.filter((c) => c.err <= MAGIC_HAMMING_MAX_ERRORS);
+    if (ok.length === 0) return null;
+    ok.sort((a, b) => {
+      if (a.err !== b.err) return a.err - b.err;
+      if (a.magicByteRev !== b.magicByteRev)
+        return a.magicByteRev ? 1 : -1;
+      if (a.streamInvert !== b.streamInvert) return a.streamInvert ? 1 : -1;
+      return 0;
+    });
+    return ok[0]!;
+  }
+
+  for (let i = 0; i <= MAGIC_BRUTE_FORCE_MAX_START_BIT; i++) {
+    if (collapsedBits.length < i + 32) break;
+
+    if (gapDecoderInverts) {
+      const e0 = hamming32VsMagic(collapsedBits, i, magic32Msb, false);
+      const e1 = hamming32VsMagic(collapsedBits, i, magic32Lsb, false);
+      noteGlobalBest(e0, i);
+      noteGlobalBest(e1, i);
+      const chosen = pickAcceptable([
+        { err: e0, streamInvert: false, magicByteRev: false },
+        { err: e1, streamInvert: false, magicByteRev: true },
+      ]);
+      if (chosen) {
+        console.log(
+          "FOUND MAGIC AT BIT:",
+          i,
+          "ERROR_BITS:",
+          chosen.err,
+          "INVERTED:",
+          chosen.streamInvert,
+          "MAGIC_LSB_FIRST_PER_BYTE:",
+          chosen.magicByteRev
+        );
+        return {
+          match: { offset: i, streamInvert: chosen.streamInvert },
+          scanStats: {
+            bestHamming: globalBestErr,
+            bestIndex: globalBestIndex,
+          },
+        };
+      }
+      continue;
+    }
+
+    const e0 = hamming32VsMagic(collapsedBits, i, magic32Msb, false);
+    const e1 = hamming32VsMagic(collapsedBits, i, magic32Msb, true);
+    const e2 = hamming32VsMagic(collapsedBits, i, magic32Lsb, false);
+    const e3 = hamming32VsMagic(collapsedBits, i, magic32Lsb, true);
+    noteGlobalBest(e0, i);
+    noteGlobalBest(e1, i);
+    noteGlobalBest(e2, i);
+    noteGlobalBest(e3, i);
+    const chosen = pickAcceptable([
+      { err: e0, streamInvert: false, magicByteRev: false },
+      { err: e1, streamInvert: true, magicByteRev: false },
+      { err: e2, streamInvert: false, magicByteRev: true },
+      { err: e3, streamInvert: true, magicByteRev: true },
+    ]);
+    if (chosen) {
+      console.log(
+        "FOUND MAGIC AT BIT:",
+        i,
+        "ERROR_BITS:",
+        chosen.err,
+        "INVERTED:",
+        chosen.streamInvert,
+        "MAGIC_LSB_FIRST_PER_BYTE:",
+        chosen.magicByteRev
+      );
+      return {
+        match: { offset: i, streamInvert: chosen.streamInvert },
+        scanStats: {
+          bestHamming: globalBestErr,
+          bestIndex: globalBestIndex,
+        },
+      };
+    }
+  }
+
+  if (globalBestIndex >= 0) {
+    console.log(
+      `[Creator Guard] Scan failed. Best match was ${globalBestErr} errors at index ${globalBestIndex}.`
+    );
+  } else {
+    console.log(
+      `[Creator Guard] Scan failed. No 32-bit window scanned (collapsedBits.length ${collapsedBits.length}).`
+    );
+  }
+  console.log(
+    "[Creator Guard] collapsedBits first 64 bits:",
+    collapsedBitsPrefixBinaryString(collapsedBits, 64)
+  );
+
+  return {
+    match: null,
+    scanStats: { bestHamming: globalBestErr, bestIndex: globalBestIndex },
+  };
+}
+
+function applyCollapsedStreamInvert(
+  bits: number[],
+  invert: boolean
+): number[] {
+  if (!invert) return bits;
+  return bits.map((b) => (b & 1) ^ 1);
+}
+
+function collapsedLogicalBitCountForLen(len: number, collapsedSkipBits: number): number {
+  return (6 + len) * 8 + collapsedSkipBits;
 }
 
 /** Physical stream length (bits) for one candidate UTF-8 length `len`, including preamble logical bits. */
-function physicalStreamBitLengthForLen(len: number): number {
-  return TRIPLE_REDUNDANCY * collapsedLogicalBitCountForLen(len);
+function physicalStreamBitLengthForLen(
+  len: number,
+  collapsedSkipBits: number
+): number {
+  return TRIPLE_REDUNDANCY * collapsedLogicalBitCountForLen(len, collapsedSkipBits);
 }
 
 /** Payload bits only: magic(4) + uint16BE len + utf8 id — after leading skip on collapsed stream. */
 function sliceCollapsedPayloadBits(
   collapsed: number[],
-  payloadByteLen: number
+  payloadByteLen: number,
+  collapsedSkipBits: number
 ): number[] | null {
-  const total = EXTRACT_COLLAPSED_LEADING_SKIP_BITS + payloadByteLen * 8;
-  if (collapsed.length < total) return null;
-  return collapsed.slice(
-    EXTRACT_COLLAPSED_LEADING_SKIP_BITS,
-    EXTRACT_COLLAPSED_LEADING_SKIP_BITS + payloadByteLen * 8
-  );
+  if (payloadByteLen < 1 || collapsed.length === 0) return null;
+  const payloadBitCount = payloadByteLen * 8;
+  const totalNeeded = collapsedSkipBits + payloadBitCount;
+  if (collapsed.length < totalNeeded) return null;
+  const start = collapsedSkipBits;
+  const end = start + payloadBitCount;
+  if (start < 0 || start > end || end > collapsed.length) return null;
+  return collapsed.slice(start, end);
 }
 
-function collapsedBitsAlignedForMagicHex(bits: number[] | null): number[] | null {
-  if (!bits || bits.length < EXTRACT_COLLAPSED_LEADING_SKIP_BITS + 32) return bits;
-  return bits.slice(EXTRACT_COLLAPSED_LEADING_SKIP_BITS);
+function collapsedBitsAlignedForMagicHex(
+  bits: number[] | null,
+  collapsedSkipBits: number
+): number[] | null {
+  if (!bits || bits.length < collapsedSkipBits + 32) return bits;
+  return bits.slice(collapsedSkipBits);
 }
 
 export type WatermarkExtractFailureCode =
@@ -108,12 +333,21 @@ export type WatermarkExtractFailureCode =
   | "capacity"
   | "sync_offset";
 
+/** Collapsed-stream diagnostic from magic brute-force (API / browser visibility). */
+export type WatermarkExtractDebugSnapshot = {
+  collapsedLen: number;
+  first64: string;
+  bestHamming: number;
+  bestIndex: number;
+};
+
 export type WatermarkExtractResult =
   | { ok: true; userId: string }
   | {
       ok: false;
       code: WatermarkExtractFailureCode;
       debug?: WatermarkVerifyExtractDebug;
+      debugSnapshot?: WatermarkExtractDebugSnapshot;
     };
 
 type BitmapLike = {
@@ -423,6 +657,13 @@ function enforceMinDctGapAfterClamp(
 }
 
 /**
+ * Minimum interior **block** count before `primaryCollapsedBitsForShiftScan` falls back to linear
+ * `blockBits` padding (was `magicSkipBits + 32`). **Lower** = use real block bits sooner → wider
+ * raw collapsed stream for magic / shift diagnostics (`8` requested for Vercel / noisy decode).
+ */
+const INTERIOR_PADDING = 8;
+
+/**
  * **Interior 8×8 grid** — skip block row 0 and block col 0 (edge tiles). First embedded block is
  * **bx=1, by=1** → pixels **[8,8)..[15,15)**, avoiding common border/canvas/PNG edge artifacts.
  * `bw`×`bh` here = **interior** block counts `(fullBw-1)×(fullBh-1)`.
@@ -523,7 +764,7 @@ function embedBitInBlock(
   }
 }
 
-/** Decode one bit from mid-frequency DCT gap (coeff (3,1) minus (1,3)). */
+/** Decode one bit from mid-frequency DCT gap (embed + readBitFromBlock verify). */
 function decodeBitFromMidfreqGap(gap: number): number {
   if (gap > EXTRACT_GAP) return 1;
   if (gap < -EXTRACT_GAP) return 0;
@@ -532,11 +773,16 @@ function decodeBitFromMidfreqGap(gap: number): number {
   return 0;
 }
 
+/** Extract-only: optional polarity flip vs channel (does not affect embed). */
+function decodeBitFromMidfreqGapForExtract(gap: number): number {
+  const b = decodeBitFromMidfreqGap(gap);
+  return EXTRACT_INVERT_DCT_GAP_DECODER ? b ^ 1 : b;
+}
+
 /**
  * Protocol: bit 1 iff (A−B) > EXTRACT_GAP; bit 0 iff (A−B) < −EXTRACT_GAP.
- * In the ambiguous band |gap| ≤ EXTRACT_GAP (common after lossy recompression), decode by **sign**
- * of gap — embed pushes A>B for 1 and A<B for 0, so residual direction still carries information.
- * Exact tie (gap===0) → 0.
+ * In the ambiguous band |gap| ≤ EXTRACT_GAP, decode by **sign** of gap with ε=0 (embed/verify).
+ * Extract uses `decodeBitFromMidfreqGapForExtract` → larger ε to suppress noise 1s.
  */
 function readBitFromBlock(
   data: Buffer,
@@ -668,31 +914,51 @@ function bitShiftHex0to7Object(
   return o;
 }
 
-/** Minimum collapsed bits so offset_7 hex (shift 7 + 32) exists after leading skip. */
-const MIN_COLLAPSED_BITS_FOR_SHIFT_HEX =
-  EXTRACT_COLLAPSED_LEADING_SKIP_BITS + 39;
-
 /** Same collapsed stream used for verify `bitShiftHex0to7` (len10 → len1 → padded linear). */
 function primaryCollapsedBitsForShiftScan(opts: {
   auditCollapsedLen10: number[] | null;
   auditCollapsedLen1: number[] | null;
   blockBits: number[];
   count: number;
+  magicSkipBits: number;
+  minInteriorBlocksForPad: number;
 }): number[] {
-  const { auditCollapsedLen10, auditCollapsedLen1, blockBits, count } = opts;
+  const {
+    auditCollapsedLen10,
+    auditCollapsedLen1,
+    blockBits,
+    count,
+    magicSkipBits,
+    minInteriorBlocksForPad,
+  } = opts;
+  const minCollapsedBitsForShiftHex = magicSkipBits + 39;
   let primaryCollapsed: number[] | null =
     auditCollapsedLen10 &&
-    auditCollapsedLen10.length >= MIN_COLLAPSED_BITS_FOR_SHIFT_HEX
+    auditCollapsedLen10.length >= minCollapsedBitsForShiftHex
       ? auditCollapsedLen10
       : auditCollapsedLen1 &&
-          auditCollapsedLen1.length >= MIN_COLLAPSED_BITS_FOR_SHIFT_HEX
+          auditCollapsedLen1.length >= minCollapsedBitsForShiftHex
         ? auditCollapsedLen1
         : null;
 
-  if (!primaryCollapsed || primaryCollapsed.length < MIN_COLLAPSED_BITS_FOR_SHIFT_HEX) {
+  if (
+    !primaryCollapsed ||
+    primaryCollapsed.length < minCollapsedBitsForShiftHex
+  ) {
+    if (count < minInteriorBlocksForPad) {
+      console.warn(
+        "[Creator Guard DCT] primaryCollapsed_pad_skipped_insufficient_blocks",
+        {
+          count,
+          needBlocksAtLeast: minInteriorBlocksForPad,
+          note: "Avoid padding to all-zero tail in debug when grid is too small for aligned magic",
+        }
+      );
+      return [];
+    }
     const linear: number[] = [];
     for (let i = 0; i < count; i++) linear.push(blockBits[i]! & 1);
-    while (linear.length < MIN_COLLAPSED_BITS_FOR_SHIFT_HEX) linear.push(0);
+    while (linear.length < minCollapsedBitsForShiftHex) linear.push(0);
     primaryCollapsed = linear;
   }
 
@@ -709,6 +975,8 @@ function buildWatermarkVerifyExtractDebug(opts: {
   count: number;
   fullBw: number;
   fullBh: number;
+  magicSkipBits: number;
+  streamInvertCollapsed: boolean;
 }): WatermarkVerifyExtractDebug {
   const {
     auditPhysicalLen1,
@@ -720,6 +988,8 @@ function buildWatermarkVerifyExtractDebug(opts: {
     count,
     fullBw,
     fullBh,
+    magicSkipBits,
+    streamInvertCollapsed,
   } = opts;
 
   const physicalFirst64 =
@@ -727,31 +997,39 @@ function buildWatermarkVerifyExtractDebug(opts: {
       ? auditPhysicalLen1.slice(0, 64).join("")
       : null;
 
+  const minInteriorBlocksForPad = magicSkipBits + INTERIOR_PADDING;
   const collapsedForShiftHex = primaryCollapsedBitsForShiftScan({
     auditCollapsedLen10,
     auditCollapsedLen1,
     blockBits,
     count,
+    magicSkipBits,
+    minInteriorBlocksForPad,
   });
+  const forHex = applyCollapsedStreamInvert(
+    collapsedForShiftHex,
+    streamInvertCollapsed
+  );
   const alignedForMagicHex =
-    collapsedBitsAlignedForMagicHex(collapsedForShiftHex) ?? collapsedForShiftHex;
+    collapsedBitsAlignedForMagicHex(forHex, magicSkipBits) ?? forHex;
 
   const collapsedFor64 =
     auditCollapsedLen10 &&
-    auditCollapsedLen10.length >= EXTRACT_COLLAPSED_LEADING_SKIP_BITS + 64
-      ? auditCollapsedLen10.slice(
-          EXTRACT_COLLAPSED_LEADING_SKIP_BITS,
-          EXTRACT_COLLAPSED_LEADING_SKIP_BITS + 64
-        )
+    auditCollapsedLen10.length >= magicSkipBits + 64
+      ? auditCollapsedLen10.slice(magicSkipBits, magicSkipBits + 64)
       : auditCollapsedLen1 &&
-          auditCollapsedLen1.length >= EXTRACT_COLLAPSED_LEADING_SKIP_BITS + 64
-        ? auditCollapsedLen1.slice(
-            EXTRACT_COLLAPSED_LEADING_SKIP_BITS,
-            EXTRACT_COLLAPSED_LEADING_SKIP_BITS + 64
-          )
+          auditCollapsedLen1.length >= magicSkipBits + 64
+        ? auditCollapsedLen1.slice(magicSkipBits, magicSkipBits + 64)
         : null;
   const collapsedFirst64 = collapsedFor64
-    ? collapsedFor64.join("")
+    ? applyCollapsedStreamInvert(
+        collapsedFor64,
+        streamInvertCollapsed
+      ).join("")
+    : null;
+
+  const len1ForObj = auditCollapsedLen1
+    ? applyCollapsedStreamInvert(auditCollapsedLen1, streamInvertCollapsed)
     : null;
 
   return {
@@ -760,7 +1038,7 @@ function buildWatermarkVerifyExtractDebug(opts: {
     bitShiftHex0to7: buildBitShiftHex0to7Struct(alignedForMagicHex),
     bitShiftHex0to7Source: "scan_v4",
     bitShiftHex0to7CollapsedLen1: bitShiftHex0to7Object(
-      collapsedBitsAlignedForMagicHex(auditCollapsedLen1) ?? auditCollapsedLen1,
+      collapsedBitsAlignedForMagicHex(len1ForObj, magicSkipBits) ?? len1ForObj,
       "verify collapsed len=1"
     ),
     grid: {
@@ -878,41 +1156,82 @@ export function extractMemberIdDctDetailed(
   }
 
   /**
-   * Collapsed logical stream includes `EXTRACT_COLLAPSED_LEADING_SKIP_BITS` before magic; payload
-   * is magic(4) + uint16BE len + utf8 id — same as embed after skip.
+   * Auto-align: search first ≤128 collapsed logical bits for CGW\\x03 (raw + stream XOR).
+   * `magicSkipBits` + `streamInvertCollapsed` are the production settings for this image.
    */
   const blockBits: number[] = new Array(count);
   for (let k = 0; k < count; k++) {
     const { bx, by } = blockIndexToCoords(k, bw);
-    blockBits[k] = readBitFromBlock(data, width, height, bx, by);
+    const coeff = dct8x8(readLumaBlock(data, width, height, bx, by));
+    const gap = coeff[COEFF_A]! - coeff[COEFF_B]!;
+    blockBits[k] = decodeBitFromMidfreqGapForExtract(gap);
   }
 
-  const Lphy_len1 = physicalStreamBitLengthForLen(1);
-  const Lphy_len10 = physicalStreamBitLengthForLen(10);
+  let magicSkipBits = EXTRACT_COLLAPSED_LEADING_SKIP_FALLBACK;
+  let streamInvertCollapsed = false;
 
-  let auditPhysicalLen1: number[] | null = null;
-  let auditCollapsedLen1: number[] | null = null;
-  let auditCollapsedLen10: number[] | null = null;
+  function loadAuditsForSkip(skip: number): {
+    auditPhysicalLen1: number[] | null;
+    auditCollapsedLen1: number[] | null;
+    auditCollapsedLen10: number[] | null;
+  } {
+    const Lphy1 = physicalStreamBitLengthForLen(1, skip);
+    const Lphy10 = physicalStreamBitLengthForLen(10, skip);
+    let auditPhysicalLen1: number[] | null = null;
+    let auditCollapsedLen1: number[] | null = null;
+    let auditCollapsedLen10: number[] | null = null;
+    if (count >= Lphy1) {
+      auditPhysicalLen1 = reconstructBigEndianBitsFromBlocks(
+        blockBits,
+        count,
+        Lphy1
+      );
+      if (auditPhysicalLen1) {
+        auditCollapsedLen1 = collapseTriplePhysicalBits(auditPhysicalLen1);
+      }
+    }
+    if (count >= Lphy10) {
+      const p10 = reconstructBigEndianBitsFromBlocks(
+        blockBits,
+        count,
+        Lphy10
+      );
+      if (p10) {
+        auditCollapsedLen10 = collapseTriplePhysicalBits(p10);
+      }
+    }
+    return {
+      auditPhysicalLen1,
+      auditCollapsedLen1,
+      auditCollapsedLen10,
+    };
+  }
 
-  if (count >= Lphy_len1) {
-    auditPhysicalLen1 = reconstructBigEndianBitsFromBlocks(
-      blockBits,
-      count,
-      Lphy_len1
+  let { auditPhysicalLen1, auditCollapsedLen1, auditCollapsedLen10 } =
+    loadAuditsForSkip(magicSkipBits);
+
+  let magicBruteScanStats: MagicBruteForceScanStats = {
+    bestHamming: 33,
+    bestIndex: -1,
+  };
+  if (auditCollapsedLen10 !== null && auditCollapsedLen10.length >= 32) {
+    const brute = bruteForceMagicSkip0To32(
+      auditCollapsedLen10,
+      EXTRACT_INVERT_DCT_GAP_DECODER
     );
-    if (auditPhysicalLen1) {
-      auditCollapsedLen1 = collapseTriplePhysicalBits(auditPhysicalLen1);
+    magicBruteScanStats = brute.scanStats;
+    if (brute.match) {
+      const found = brute.match;
+      if (found.offset !== magicSkipBits) {
+        magicSkipBits = found.offset;
+        ({ auditPhysicalLen1, auditCollapsedLen1, auditCollapsedLen10 } =
+          loadAuditsForSkip(magicSkipBits));
+      }
+      streamInvertCollapsed = found.streamInvert;
     }
   }
 
-  if (count >= Lphy_len10) {
-    const p10 = reconstructBigEndianBitsFromBlocks(
-      blockBits,
-      count,
-      Lphy_len10
-    );
-    if (p10) auditCollapsedLen10 = collapseTriplePhysicalBits(p10);
-  }
+  const minInteriorBlocks = magicSkipBits + 32;
 
   const verifyDebug: WatermarkVerifyExtractDebug =
     buildWatermarkVerifyExtractDebug({
@@ -925,7 +1244,34 @@ export function extractMemberIdDctDetailed(
       count,
       fullBw,
       fullBh,
+      magicSkipBits,
+      streamInvertCollapsed,
     });
+
+  if (count < minInteriorBlocks) {
+    console.warn(
+      "[Creator Guard DCT] interior_blocks_below_magic_skip_plus_32",
+      {
+        count,
+        minInteriorBlocks,
+        magicSkipBits,
+      }
+    );
+    return { ok: false, code: "capacity", debug: verifyDebug };
+  }
+
+  const minBlocksPhysicalLen1 = physicalStreamBitLengthForLen(1, magicSkipBits);
+  if (count < minBlocksPhysicalLen1) {
+    console.warn(
+      "[Creator Guard DCT] insufficient_interior_blocks_for_physical_stream_len1",
+      {
+        count,
+        requiredPhysicalStreamBits: minBlocksPhysicalLen1,
+        magicSkipBits,
+      }
+    );
+    return { ok: false, code: "capacity", debug: verifyDebug };
+  }
 
   const syncOk =
     data[0] === 255 &&
@@ -941,17 +1287,26 @@ export function extractMemberIdDctDetailed(
   }
 
   for (let len = 1; len <= MAX_USER_ID_BYTES; len++) {
-    const Lphy = physicalStreamBitLengthForLen(len);
+    const Lphy = physicalStreamBitLengthForLen(len, magicSkipBits);
     if (count < Lphy) continue;
 
     const allBits = reconstructBigEndianBitsFromBlocks(blockBits, count, Lphy);
     if (!allBits || allBits.length !== Lphy) continue;
 
-    const collapsed = collapseTriplePhysicalBits(allBits);
-    const needCollapsed = collapsedLogicalBitCountForLen(len);
-    if (!collapsed || collapsed.length !== needCollapsed) continue;
+    const collapsedRaw = collapseTriplePhysicalBits(allBits);
+    const needCollapsed = collapsedLogicalBitCountForLen(len, magicSkipBits);
+    if (!collapsedRaw || collapsedRaw.length !== needCollapsed) continue;
 
-    const payloadBits = sliceCollapsedPayloadBits(collapsed, 6 + len);
+    const collapsed = applyCollapsedStreamInvert(
+      collapsedRaw,
+      streamInvertCollapsed
+    );
+
+    const payloadBits = sliceCollapsedPayloadBits(
+      collapsed,
+      6 + len,
+      magicSkipBits
+    );
     if (!payloadBits || payloadBits.length !== (6 + len) * 8) continue;
 
     const buf = bigEndianBitsToBuffer(payloadBits, 6 + len);
@@ -996,19 +1351,45 @@ export function extractMemberIdDctDetailed(
     auditCollapsedLen1,
     blockBits,
     count,
+    magicSkipBits,
+    minInteriorBlocksForPad: magicSkipBits + INTERIOR_PADDING,
   });
+  if (rawCollapsed.length === 0) {
+    return { ok: false, code: "capacity", debug: verifyDebug };
+  }
+  const forMagicMissing = applyCollapsedStreamInvert(
+    rawCollapsed,
+    streamInvertCollapsed
+  );
   const alignedMagic =
-    collapsedBitsAlignedForMagicHex(rawCollapsed) ?? rawCollapsed;
+    collapsedBitsAlignedForMagicHex(forMagicMissing, magicSkipBits) ??
+    forMagicMissing;
   const debugData: WatermarkVerifyExtractDebug = {
     ...verifyDebug,
     bitShiftHex0to7: buildBitShiftHex0to7Struct(alignedMagic),
     bitShiftHex0to7Source: "scan_v4",
   };
 
+  const collapsedForSnapshot =
+    auditCollapsedLen10 && auditCollapsedLen10.length > 0
+      ? auditCollapsedLen10
+      : rawCollapsed.length > 0
+        ? rawCollapsed
+        : blockBits;
+  const debugSnapshot: WatermarkExtractDebugSnapshot = {
+    collapsedLen: collapsedForSnapshot.length,
+    first64: Array.from(collapsedForSnapshot.slice(0, 64))
+      .map((b) => String(b & 1))
+      .join(""),
+    bestHamming: magicBruteScanStats.bestHamming,
+    bestIndex: magicBruteScanStats.bestIndex,
+  };
+
   return {
     ok: false,
     code: "magic_missing",
     debug: debugData,
+    debugSnapshot,
   };
 }
 

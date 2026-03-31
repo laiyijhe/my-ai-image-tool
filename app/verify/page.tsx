@@ -110,10 +110,13 @@ export default function VerifyPage() {
           })
         );
 
-        const res = await fetch("/api/verify", {
-          method: "POST",
-          body: formData,
-        });
+        const res = await fetch(
+          `/api/verify?t=${Date.now()}&r=${Math.random().toString(36).slice(2, 10)}`,
+          {
+            method: "POST",
+            body: formData,
+          }
+        );
         const httpStatus = res.status;
         let data: Record<string, unknown>;
         try {

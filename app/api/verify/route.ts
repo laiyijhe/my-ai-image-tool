@@ -6,6 +6,9 @@ import {
 } from "@/lib/watermark-dct";
 import { NextResponse } from "next/server";
 
+// Deployment Sync: v1.0.4 — magic_missing debugSnapshot in 422 JSON; verify route cache bypass
+export const dynamic = "force-dynamic";
+
 export const runtime = "nodejs";
 
 const MAX_UPLOAD_BYTES = 12 * 1024 * 1024;
@@ -75,6 +78,7 @@ export async function POST(request: Request) {
           code: "magic_missing",
           DIAGNOSTIC_HEX,
           FULL_OFFSETS: result.debug?.bitShiftHex0to7 ?? null,
+          debugSnapshot: result.debugSnapshot,
         },
         { status: 422 }
       );
