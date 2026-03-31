@@ -84,6 +84,17 @@ export async function POST(request: Request) {
       );
     }
 
+    if (result.code === "utf8_corrupt" && result.debugSnapshot) {
+      return NextResponse.json(
+        {
+          ok: false,
+          code: "utf8_corrupt",
+          debugSnapshot: result.debugSnapshot,
+        },
+        { status: S }
+      );
+    }
+
     return NextResponse.json(
       { ok: false, message: "FAIL: " + result.code },
       { status: S }

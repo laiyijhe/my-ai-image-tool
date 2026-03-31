@@ -67,7 +67,7 @@ const GAP_ENFORCE_MAX_STEPS = 192;
  * Extract-only: compare **magnitudes** |coeff(3,1)| vs |coeff(1,3)| (flat indices `COEFF_A` / `COEFF_B`).
  * Bit 1 iff `|A| − |B| > threshold` — less sensitive than signed `A−B` when noise biases weak positives.
  */
-const EXTRACT_MAG_GAP_THRESHOLD = 0.5;
+const EXTRACT_MAG_GAP_THRESHOLD = 1.5;
 
 /** Same logical payload bit is written to 3 consecutive physical stream slots (then cyclic). */
 const TRIPLE_REDUNDANCY = 3;
@@ -356,6 +356,14 @@ export type WatermarkExtractFailureCode =
   | "capacity"
   | "sync_offset";
 
+/** Post-alignment payload probe when fuzzy magic matched but strict decode did not (API / UI). */
+export type WatermarkExtractForceExtractDebug = {
+  failedAt: "length" | "utf8" | "empty";
+  /** Hex of payload bytes 4–5 (uint16BE declared length) when available, else `""`. */
+  rawLengthHex: string;
+  lastCandidateLen: number | null;
+};
+
 /** Collapsed-stream diagnostic from magic brute-force (API / browser visibility). */
 export type WatermarkExtractDebugSnapshot = {
   collapsedLen: number;
@@ -364,6 +372,8 @@ export type WatermarkExtractDebugSnapshot = {
   bestIndex: number;
   /** Whether `bestHamming` favored a stream-XOR window vs canonical magic. */
   bestFromInvertedStream: boolean;
+  /** Set when brute-force aligned magic but `magic_missing` (or utf8 path below). */
+  forceExtract?: WatermarkExtractForceExtractDebug;
 };
 
 export type WatermarkExtractResult =
@@ -1246,6 +1256,7 @@ export function extractMemberIdDctDetailed(
     bestIndex: -1,
     bestFromInvertedStream: false,
   };
+  let hadBruteMagicMatch = false;
   if (auditCollapsedLen10 !== null && auditCollapsedLen10.length >= 32) {
     const brute = bruteForceMagicSkip0To32(
       auditCollapsedLen10,
@@ -1253,6 +1264,7 @@ export function extractMemberIdDctDetailed(
     );
     magicBruteScanStats = brute.scanStats;
     if (brute.match) {
+      hadBruteMagicMatch = true;
       const found = brute.match;
       if (found.offset !== magicSkipBits) {
         magicSkipBits = found.offset;
@@ -1260,8 +1272,15 @@ export function extractMemberIdDctDetailed(
           loadAuditsForSkip(magicSkipBits));
       }
       streamInvertCollapsed = found.streamInvert;
+      console.log("[Creator Guard DCT] brute magic aligned", {
+        offset: found.offset,
+        streamInvertCollapsed: found.streamInvert,
+        magicSkipBits,
+      });
     }
   }
+
+  let forceExtractProbe: WatermarkExtractForceExtractDebug | null = null;
 
   const minInteriorBlocks = magicSkipBits + 32;
 
@@ -1320,37 +1339,136 @@ export function extractMemberIdDctDetailed(
 
   for (let len = 1; len <= MAX_USER_ID_BYTES; len++) {
     const Lphy = physicalStreamBitLengthForLen(len, magicSkipBits);
-    if (count < Lphy) continue;
+    if (count < Lphy) {
+      if (hadBruteMagicMatch) {
+        console.log("[Creator Guard DCT] extract skip: insufficient blocks for Lphy", {
+          len,
+          Lphy,
+          count,
+        });
+      }
+      continue;
+    }
 
     const allBits = reconstructBigEndianBitsFromBlocks(blockBits, count, Lphy);
-    if (!allBits || allBits.length !== Lphy) continue;
+    if (!allBits || allBits.length !== Lphy) {
+      if (hadBruteMagicMatch) {
+        console.log("[Creator Guard DCT] extract skip: reconstruct physical bits failed", {
+          len,
+          Lphy,
+        });
+      }
+      continue;
+    }
 
     const collapsedRaw = collapseTriplePhysicalBits(allBits);
     const needCollapsed = collapsedLogicalBitCountForLen(len, magicSkipBits);
-    if (!collapsedRaw || collapsedRaw.length !== needCollapsed) continue;
+    if (!collapsedRaw || collapsedRaw.length !== needCollapsed) {
+      if (hadBruteMagicMatch) {
+        forceExtractProbe = {
+          failedAt: "empty",
+          rawLengthHex: "",
+          lastCandidateLen: len,
+        };
+        console.log("[Creator Guard DCT] extract skip: collapsed length mismatch", {
+          len,
+          needCollapsed,
+          got: collapsedRaw?.length ?? null,
+          dataLength: len,
+        });
+      }
+      continue;
+    }
 
     const collapsed = applyCollapsedStreamInvert(
       collapsedRaw,
       streamInvertCollapsed
     );
 
+    const bitsRequiredForPayload = (6 + len) * 8 + magicSkipBits;
+    const dataLengthExceedsCollapsed = bitsRequiredForPayload > collapsed.length;
+
+    if (hadBruteMagicMatch) {
+      console.log("[Creator Guard DCT] extract probe", {
+        candidateUserIdLen: len,
+        dataLength: len,
+        collapsedLen: collapsed.length,
+        magicSkipBits,
+        bitsRequiredForPayload,
+        dataLengthExceedsCollapsed,
+        streamInvertCollapsed,
+      });
+    }
+
     const payloadBits = sliceCollapsedPayloadBits(
       collapsed,
       6 + len,
       magicSkipBits
     );
-    if (!payloadBits || payloadBits.length !== (6 + len) * 8) continue;
+    if (!payloadBits || payloadBits.length !== (6 + len) * 8) {
+      if (hadBruteMagicMatch) {
+        forceExtractProbe = {
+          failedAt: "length",
+          rawLengthHex: "",
+          lastCandidateLen: len,
+        };
+        console.log("[Creator Guard DCT] extract skip: payload slice", {
+          len,
+          collapsedLen: collapsed.length,
+          expectedPayloadBits: (6 + len) * 8,
+          gotPayloadBits: payloadBits?.length ?? null,
+        });
+      }
+      continue;
+    }
 
     const buf = bigEndianBitsToBuffer(payloadBits, 6 + len);
-    if (!buf || buf.length < 6 + len) continue;
+    if (!buf || buf.length < 6 + len) {
+      if (hadBruteMagicMatch) {
+        forceExtractProbe = {
+          failedAt: "length",
+          rawLengthHex: "",
+          lastCandidateLen: len,
+        };
+        console.log("[Creator Guard DCT] extract skip: buffer pack", { len });
+      }
+      continue;
+    }
 
+    const rawLengthHex = buf.subarray(4, 6).toString("hex");
     const declaredLenBits32_47 = uint16BEFromBits32Through47(payloadBits);
     if (declaredLenBits32_47 === null || declaredLenBits32_47 !== len) {
+      if (hadBruteMagicMatch) {
+        forceExtractProbe = {
+          failedAt: "length",
+          rawLengthHex,
+          lastCandidateLen: len,
+        };
+        console.log("[Creator Guard DCT] extract skip: declared length mismatch", {
+          len,
+          declaredLenBits32_47,
+          rawLengthHex,
+          magicHeadHex: buf.subarray(0, 4).toString("hex"),
+        });
+      }
       continue;
     }
 
     const declaredFromPacked = buf.readUInt16BE(4);
     if (declaredFromPacked !== declaredLenBits32_47) {
+      if (hadBruteMagicMatch) {
+        forceExtractProbe = {
+          failedAt: "length",
+          rawLengthHex,
+          lastCandidateLen: len,
+        };
+        console.log("[Creator Guard DCT] extract skip: packed vs bits length disagree", {
+          len,
+          declaredFromPacked,
+          declaredLenBits32_47,
+          rawLengthHex,
+        });
+      }
       continue;
     }
 
@@ -1363,17 +1481,59 @@ export function extractMemberIdDctDetailed(
         };
       }
     } else {
+      if (hadBruteMagicMatch) {
+        forceExtractProbe = {
+          failedAt: "length",
+          rawLengthHex,
+          lastCandidateLen: len,
+        };
+        console.log("[Creator Guard DCT] extract skip: magic header not CGW\\x03", {
+          len,
+          magicHeadHex: buf.subarray(0, 4).toString("hex"),
+          rawLengthHex,
+        });
+      }
       continue;
     }
     const raw = buf.subarray(6, 6 + len);
     try {
       const userId = new TextDecoder("utf-8", { fatal: true }).decode(raw);
       return { ok: true, userId };
-    } catch {
+    } catch (utf8Err) {
+      console.error(
+        "[Creator Guard DCT] UTF-8 decode failed after magic OK",
+        { len, rawLengthHex, err: String(utf8Err) }
+      );
+      if (hadBruteMagicMatch) {
+        forceExtractProbe = {
+          failedAt: "utf8",
+          rawLengthHex,
+          lastCandidateLen: len,
+        };
+      }
       return {
         ok: false,
         code: "utf8_corrupt",
         debug: verifyDebug,
+        debugSnapshot: hadBruteMagicMatch
+          ? {
+              collapsedLen: (auditCollapsedLen10 ?? []).length,
+              first64: Array.from(
+                (auditCollapsedLen10 ?? []).slice(0, 64)
+              )
+                .map((b) => String(b & 1))
+                .join(""),
+              bestHamming: magicBruteScanStats.bestHamming,
+              bestIndex: magicBruteScanStats.bestIndex,
+              bestFromInvertedStream:
+                magicBruteScanStats.bestFromInvertedStream,
+              forceExtract: forceExtractProbe ?? {
+                failedAt: "utf8",
+                rawLengthHex,
+                lastCandidateLen: len,
+              },
+            }
+          : undefined,
       };
     }
   }
@@ -1416,6 +1576,17 @@ export function extractMemberIdDctDetailed(
     bestHamming: magicBruteScanStats.bestHamming,
     bestIndex: magicBruteScanStats.bestIndex,
     bestFromInvertedStream: magicBruteScanStats.bestFromInvertedStream,
+    ...(hadBruteMagicMatch && forceExtractProbe
+      ? { forceExtract: forceExtractProbe }
+      : hadBruteMagicMatch
+        ? {
+            forceExtract: {
+              failedAt: "empty" as const,
+              rawLengthHex: "",
+              lastCandidateLen: null,
+            },
+          }
+        : {}),
   };
 
   return {
