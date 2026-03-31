@@ -61,12 +61,13 @@ const EMBED_GAP = 60;
  * etc.) we still use the **sign** of the gap so attenuated marks do not collapse to all-zero bits.
  */
 const EXTRACT_GAP = 2;
-/**
- * Inside the hysteresis band `|gap| ≤ EXTRACT_GAP`, treat small |gap| as **0** (extract path only).
- * Avoids noise pushing weak positives past `gap > 0` → excessive 1s in hex (e.g. F7-heavy heads).
- */
-const EXTRACT_GAP_AMBIGUOUS_SIGN_EPSILON = 1.0;
 const GAP_ENFORCE_MAX_STEPS = 192;
+
+/**
+ * Extract-only: compare **magnitudes** |coeff(3,1)| vs |coeff(1,3)| (flat indices `COEFF_A` / `COEFF_B`).
+ * Bit 1 iff `|A| − |B| > threshold` — less sensitive than signed `A−B` when noise biases weak positives.
+ */
+const EXTRACT_MAG_GAP_THRESHOLD = 0.5;
 
 /** Same logical payload bit is written to 3 consecutive physical stream slots (then cyclic). */
 const TRIPLE_REDUNDANCY = 3;
@@ -90,7 +91,7 @@ const EXTRACT_INVERT_DCT_GAP_DECODER = false;
 const MAGIC_BRUTE_FORCE_MAX_START_BIT = 128;
 
 /** Max Hamming distance vs `WATERMARK_MAGIC_V3` first 32 bits to accept a magic window. */
-const MAGIC_HAMMING_MAX_ERRORS = 16;
+const MAGIC_HAMMING_MAX_ERRORS = 18;
 
 /** Hamming distance at `collapsed[start..start+32)` vs `magic32`, optional per-bit invert before compare. */
 function hamming32VsMagic(
@@ -140,6 +141,8 @@ type MagicSkipCandidate = {
 type MagicBruteForceScanStats = {
   bestHamming: number;
   bestIndex: number;
+  /** True if `bestHamming` came from a stream-bit-inverted window vs magic (diagnostic). */
+  bestFromInvertedStream: boolean;
 };
 
 type BruteForceMagicSkipResult = {
@@ -168,11 +171,21 @@ function bruteForceMagicSkip0To32(
 
   let globalBestErr = 33;
   let globalBestIndex = -1;
+  let globalBestFromInvertedStream = false;
 
-  function noteGlobalBest(err: number, idx: number): void {
-    if (err < globalBestErr) {
+  /** Prefer **stream-inverted** windows when Hamming ties (diagnostic + alignment). */
+  function noteGlobalBest(
+    err: number,
+    idx: number,
+    streamInverted: boolean
+  ): void {
+    if (
+      err < globalBestErr ||
+      (err === globalBestErr && streamInverted && !globalBestFromInvertedStream)
+    ) {
       globalBestErr = err;
       globalBestIndex = idx;
+      globalBestFromInvertedStream = streamInverted;
     }
   }
 
@@ -183,9 +196,9 @@ function bruteForceMagicSkip0To32(
     if (ok.length === 0) return null;
     ok.sort((a, b) => {
       if (a.err !== b.err) return a.err - b.err;
+      if (a.streamInvert !== b.streamInvert) return a.streamInvert ? -1 : 1;
       if (a.magicByteRev !== b.magicByteRev)
         return a.magicByteRev ? 1 : -1;
-      if (a.streamInvert !== b.streamInvert) return a.streamInvert ? 1 : -1;
       return 0;
     });
     return ok[0]!;
@@ -197,8 +210,8 @@ function bruteForceMagicSkip0To32(
     if (gapDecoderInverts) {
       const e0 = hamming32VsMagic(collapsedBits, i, magic32Msb, false);
       const e1 = hamming32VsMagic(collapsedBits, i, magic32Lsb, false);
-      noteGlobalBest(e0, i);
-      noteGlobalBest(e1, i);
+      noteGlobalBest(e0, i, false);
+      noteGlobalBest(e1, i, false);
       const chosen = pickAcceptable([
         { err: e0, streamInvert: false, magicByteRev: false },
         { err: e1, streamInvert: false, magicByteRev: true },
@@ -219,6 +232,7 @@ function bruteForceMagicSkip0To32(
           scanStats: {
             bestHamming: globalBestErr,
             bestIndex: globalBestIndex,
+            bestFromInvertedStream: globalBestFromInvertedStream,
           },
         };
       }
@@ -229,10 +243,10 @@ function bruteForceMagicSkip0To32(
     const e1 = hamming32VsMagic(collapsedBits, i, magic32Msb, true);
     const e2 = hamming32VsMagic(collapsedBits, i, magic32Lsb, false);
     const e3 = hamming32VsMagic(collapsedBits, i, magic32Lsb, true);
-    noteGlobalBest(e0, i);
-    noteGlobalBest(e1, i);
-    noteGlobalBest(e2, i);
-    noteGlobalBest(e3, i);
+    noteGlobalBest(e1, i, true);
+    noteGlobalBest(e3, i, true);
+    noteGlobalBest(e0, i, false);
+    noteGlobalBest(e2, i, false);
     const chosen = pickAcceptable([
       { err: e0, streamInvert: false, magicByteRev: false },
       { err: e1, streamInvert: true, magicByteRev: false },
@@ -255,6 +269,7 @@ function bruteForceMagicSkip0To32(
         scanStats: {
           bestHamming: globalBestErr,
           bestIndex: globalBestIndex,
+          bestFromInvertedStream: globalBestFromInvertedStream,
         },
       };
     }
@@ -276,7 +291,11 @@ function bruteForceMagicSkip0To32(
 
   return {
     match: null,
-    scanStats: { bestHamming: globalBestErr, bestIndex: globalBestIndex },
+    scanStats: {
+      bestHamming: globalBestErr,
+      bestIndex: globalBestIndex,
+      bestFromInvertedStream: globalBestFromInvertedStream,
+    },
   };
 }
 
@@ -339,6 +358,8 @@ export type WatermarkExtractDebugSnapshot = {
   first64: string;
   bestHamming: number;
   bestIndex: number;
+  /** Whether `bestHamming` favored a stream-XOR window vs canonical magic. */
+  bestFromInvertedStream: boolean;
 };
 
 export type WatermarkExtractResult =
@@ -764,7 +785,10 @@ function embedBitInBlock(
   }
 }
 
-/** Decode one bit from mid-frequency DCT gap (embed + readBitFromBlock verify). */
+/**
+ * Decode one bit from **signed** mid-frequency gap `coeff_A − coeff_B` (embed + readBitFromBlock).
+ * Extract uses `decodeBitFromMidfreqGapForExtract` on **|A|−|B|** instead (see `EXTRACT_MAG_GAP_THRESHOLD`).
+ */
 function decodeBitFromMidfreqGap(gap: number): number {
   if (gap > EXTRACT_GAP) return 1;
   if (gap < -EXTRACT_GAP) return 0;
@@ -773,16 +797,20 @@ function decodeBitFromMidfreqGap(gap: number): number {
   return 0;
 }
 
-/** Extract-only: optional polarity flip vs channel (does not affect embed). */
-function decodeBitFromMidfreqGapForExtract(gap: number): number {
-  const b = decodeBitFromMidfreqGap(gap);
+function midfreqAbsMagGapFromCoeff(coeff: Float64Array): number {
+  return Math.abs(coeff[COEFF_A]!) - Math.abs(coeff[COEFF_B]!);
+}
+
+/** Extract-only: `|dct(3,1)| − |dct(1,3)|` vs threshold; optional XOR vs channel. */
+function decodeBitFromMidfreqGapForExtract(coeff: Float64Array): number {
+  const magGap = midfreqAbsMagGapFromCoeff(coeff);
+  const b = magGap > EXTRACT_MAG_GAP_THRESHOLD ? 1 : 0;
   return EXTRACT_INVERT_DCT_GAP_DECODER ? b ^ 1 : b;
 }
 
 /**
- * Protocol: bit 1 iff (A−B) > EXTRACT_GAP; bit 0 iff (A−B) < −EXTRACT_GAP.
- * In the ambiguous band |gap| ≤ EXTRACT_GAP, decode by **sign** of gap with ε=0 (embed/verify).
- * Extract uses `decodeBitFromMidfreqGapForExtract` → larger ε to suppress noise 1s.
+ * Protocol (embed/verify): bit 1 iff (A−B) > EXTRACT_GAP; bit 0 iff (A−B) < −EXTRACT_GAP;
+ * ambiguous band uses sign of signed gap.
  */
 function readBitFromBlock(
   data: Buffer,
@@ -1163,8 +1191,7 @@ export function extractMemberIdDctDetailed(
   for (let k = 0; k < count; k++) {
     const { bx, by } = blockIndexToCoords(k, bw);
     const coeff = dct8x8(readLumaBlock(data, width, height, bx, by));
-    const gap = coeff[COEFF_A]! - coeff[COEFF_B]!;
-    blockBits[k] = decodeBitFromMidfreqGapForExtract(gap);
+    blockBits[k] = decodeBitFromMidfreqGapForExtract(coeff);
   }
 
   let magicSkipBits = EXTRACT_COLLAPSED_LEADING_SKIP_FALLBACK;
@@ -1213,6 +1240,7 @@ export function extractMemberIdDctDetailed(
   let magicBruteScanStats: MagicBruteForceScanStats = {
     bestHamming: 33,
     bestIndex: -1,
+    bestFromInvertedStream: false,
   };
   if (auditCollapsedLen10 !== null && auditCollapsedLen10.length >= 32) {
     const brute = bruteForceMagicSkip0To32(
@@ -1383,6 +1411,7 @@ export function extractMemberIdDctDetailed(
       .join(""),
     bestHamming: magicBruteScanStats.bestHamming,
     bestIndex: magicBruteScanStats.bestIndex,
+    bestFromInvertedStream: magicBruteScanStats.bestFromInvertedStream,
   };
 
   return {
