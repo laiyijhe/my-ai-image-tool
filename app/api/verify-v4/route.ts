@@ -57,6 +57,12 @@ export async function POST(request: Request) {
 
     const ab = await file.arrayBuffer();
     const image = await Jimp.read(Buffer.from(ab));
+    console.log(
+      "JIMP_DEBUG: size=",
+      image.bitmap.width,
+      "x",
+      image.bitmap.height
+    );
     const result = extractMemberIdDctDetailed(image);
 
     if (result.ok) {

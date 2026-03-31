@@ -495,13 +495,12 @@ function embedBitInBlock(
   }
 }
 
-/** Decode one bit from mid-frequency DCT gap (coeff (3,1) minus (1,3)). */
+/**
+ * Decode one bit from mid-frequency DCT gap (coeff (3,1) minus (1,3)).
+ * TEMP diagnostic: no threshold — sign-only (magic / noise probe on Vercel).
+ */
 function decodeBitFromMidfreqGap(gap: number): number {
-  if (gap > EXTRACT_GAP) return 1;
-  if (gap < -EXTRACT_GAP) return 0;
-  if (gap > 0) return 1;
-  if (gap < 0) return 0;
-  return 0;
+  return gap >= 0 ? 1 : 0;
 }
 
 /**
@@ -989,6 +988,7 @@ export function extractMemberIdDctDetailed(
 
   const blockBits: number[] = new Array(count);
   const gapsFirst32: number[] = [];
+  const gapsFirst10: number[] = [];
   const coeffA_first8: number[] = [];
   const coeffB_first8: number[] = [];
   for (let k = 0; k < count; k++) {
@@ -997,6 +997,12 @@ export function extractMemberIdDctDetailed(
     const a = coeff[COEFF_A]!;
     const b = coeff[COEFF_B]!;
     const gap = a - b;
+    if (k < 10) {
+      gapsFirst10.push(gap);
+      if (Math.abs(gap) < 0.0001) {
+        console.log("QUANTIZATION_WIPE_DETECTED at block", k);
+      }
+    }
     if (k < 32) gapsFirst32.push(gap);
     if (k < 8) {
       coeffA_first8.push(a);
@@ -1004,6 +1010,11 @@ export function extractMemberIdDctDetailed(
     }
     blockBits[k] = decodeBitFromMidfreqGap(gap);
   }
+
+  console.log(
+    "RAW_GAPS_CHECK:",
+    gapsFirst10.map((g) => g.toFixed(6))
+  );
 
   if (gapsFirst32.length > 0) {
     const maxAbs = gapsFirst32.reduce((m, g) => Math.max(m, Math.abs(g)), 0);

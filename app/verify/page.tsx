@@ -30,6 +30,7 @@ function drawArrayBufferToHiddenCanvas(
         if (w < 1 || h < 1) return;
         canvas.width = w;
         canvas.height = h;
+        console.log("CANVAS_DEBUG: size=", canvas.width, "x", canvas.height);
         const ctx = canvas.getContext("2d", { alpha: true });
         if (!ctx) return;
         ctx.setTransform(1, 0, 0, 1, 0, 0);
