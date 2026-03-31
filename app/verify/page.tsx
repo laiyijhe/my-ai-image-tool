@@ -1,7 +1,5 @@
 "use client";
 
-// DEPLOYMENT_VERSION_FINAL_BOMB_1
-
 import { LanguageSelector } from "@/components/LanguageSelector";
 import { useLanguage } from "@/lib/i18n/language-context";
 import Link from "next/link";
@@ -30,7 +28,6 @@ function drawArrayBufferToHiddenCanvas(
         if (w < 1 || h < 1) return;
         canvas.width = w;
         canvas.height = h;
-        console.log("CANVAS_DEBUG: size=", canvas.width, "x", canvas.height);
         const ctx = canvas.getContext("2d", { alpha: true });
         if (!ctx) return;
         ctx.setTransform(1, 0, 0, 1, 0, 0);
@@ -72,17 +69,10 @@ export default function VerifyPage() {
   const [userId, setUserId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [errorDebug, setErrorDebug] = useState<string | null>(null);
-  /** Last /api/verify-v4 JSON body (or client error stub) — always shown under the error for bit-shift work. */
+  /** Last /api/verify JSON body (or client error stub). */
   const [verifyResult, setVerifyResult] = useState<Record<string, unknown> | null>(
     null
   );
-
-  const fileRef = useRef<File | null>(null);
-  const analyzeNativeRef = useRef<HTMLButtonElement>(null);
-
-  useEffect(() => {
-    fileRef.current = file;
-  }, [file]);
 
   const previewUrl = useMemo(() => {
     if (!file) return null;
@@ -120,75 +110,47 @@ export default function VerifyPage() {
           })
         );
 
-        alert("SENDING_TO_API_NOW");
+        const res = await fetch("/api/verify", {
+          method: "POST",
+          body: formData,
+        });
+        const httpStatus = res.status;
+        let data: Record<string, unknown>;
         try {
-          const res = await fetch("/api/verify-v4", {
-            method: "POST",
-            body: formData,
-          });
-          const httpStatus = res.status;
-          const rawText = await res.text();
-          let data: Record<string, unknown> | null = null;
-          try {
-            data = JSON.parse(rawText) as Record<string, unknown>;
-          } catch {
-            /* non-JSON body */
-          }
-          if (httpStatus === 422) {
-            alert("HEX_FOUND: " + JSON.stringify(data?.FULL_OFFSETS));
-          }
-          console.log("CLIENT_RECEIVE raw", httpStatus, rawText);
-          alert("RAW_DATA: " + rawText);
-          document.body.style.margin = "0";
-          document.body.style.background = "#000000";
-          const esc = rawText
-            .replace(/&/g, "&amp;")
-            .replace(/</g, "&lt;")
-            .replace(/>/g, "&gt;");
-          document.body.innerHTML =
-            '<pre style="color:#fff;white-space:pre-wrap;word-break:break-all;padding:24px;margin:0;font:14px/1.45 ui-monospace,monospace;">' +
-            esc +
-            "</pre>";
-        } catch (fetchErr) {
-          console.error("verify fetch block", fetchErr);
-          alert("FETCH_CATCH: " + String(fetchErr));
-          document.body.style.margin = "0";
-          document.body.style.background = "#3f0000";
-          document.body.innerHTML =
-            "<pre style=\"color:#fecaca;padding:24px;margin:0\">" +
-            String(fetchErr).replace(/&/g, "&amp;").replace(/</g, "&lt;") +
-            "</pre>";
+          data = (await res.json()) as Record<string, unknown>;
+        } catch {
+          setError(t.verifyUploadError);
+          setErrorDebug(`HTTP ${httpStatus} — invalid JSON`);
+          return;
         }
-        return;
+
+        setVerifyResult(data);
+
+        if (data.ok === true && typeof data.userId === "string") {
+          setUserId(data.userId);
+          return;
+        }
+
+        const msg =
+          typeof data.message === "string"
+            ? data.message
+            : typeof data.code === "string"
+              ? `FAIL: ${data.code}`
+              : t.verifyUploadError;
+        setError(msg);
+        if (httpStatus === 422 && data.FULL_OFFSETS != null) {
+          setErrorDebug(JSON.stringify(data.FULL_OFFSETS, null, 2));
+        }
       } catch {
         setError(t.verifyUploadError);
         setErrorDebug(null);
-        setVerifyResult({
-          error: "client_fetch_failed",
-          message: t.verifyUploadError,
-        });
+        setVerifyResult({ error: "client_fetch_failed" });
       } finally {
         setLoading(false);
       }
     },
     [t]
   );
-
-  useEffect(() => {
-    const btn = analyzeNativeRef.current;
-    if (!btn) return;
-    const onNativeClick = () => {
-      alert("NATIVE_DOM_ANALYZE_CLICK");
-      const f = fileRef.current;
-      if (!f) {
-        alert("NO_FILE_PICKED");
-        return;
-      }
-      void handleVerify(f);
-    };
-    btn.addEventListener("click", onNativeClick);
-    return () => btn.removeEventListener("click", onNativeClick);
-  }, [handleVerify]);
 
   const onDrop = useCallback(
     (e: React.DragEvent) => {
@@ -297,19 +259,17 @@ export default function VerifyPage() {
           ) : null}
         </button>
 
-        {/* Native DOM listener only — no React onClick (wire-up test). */}
         <div className="mt-5 flex w-full items-center gap-3">
           <button
-            ref={analyzeNativeRef}
-            id="ID_VERIFY_V4_FINAL"
             type="button"
-            className="flex h-12 min-w-0 flex-1 items-center justify-center rounded-2xl bg-gradient-to-r from-cyan-400 to-teal-500 text-sm font-semibold text-slate-950 shadow-lg shadow-cyan-900/20 transition hover:brightness-105"
+            disabled={loading || !file}
+            onClick={() => {
+              if (file) void handleVerify(file);
+            }}
+            className="flex h-12 min-w-0 flex-1 items-center justify-center rounded-2xl bg-gradient-to-r from-cyan-400 to-teal-500 text-sm font-semibold text-slate-950 shadow-lg shadow-cyan-900/20 transition hover:brightness-105 disabled:opacity-50"
           >
             {loading ? t.verifyAnalyzing : t.verifyButton}
           </button>
-          <p className="shrink-0 text-xs font-mono tabular-nums text-slate-400">
-            VER: 4.0.0
-          </p>
         </div>
 
         {error !== null ? (

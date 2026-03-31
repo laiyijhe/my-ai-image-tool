@@ -30,7 +30,6 @@ function debugStringOffsets0to7(
 }
 
 export async function POST(request: Request) {
-  console.log("--- API_HIT_START ---");
   /** Always 200 — avoid browsers/devtools flagging JSON as a “failed” non-OK fetch. */
   const S = 200 as const;
   let lastKnownDebug: WatermarkVerifyExtractDebug | null = null;
@@ -64,10 +63,6 @@ export async function POST(request: Request) {
     lastKnownDebug = result.debug ?? null;
 
     if (result.code === "magic_missing") {
-      console.log(
-        "--- RAW BITSCAN ---",
-        result.debug?.bitShiftHex0to7
-      );
       const offs = result.debug?.bitShiftHex0to7 as
         | Record<string, unknown>
         | undefined;

@@ -66,6 +66,39 @@ const GAP_ENFORCE_MAX_STEPS = 192;
 /** Same logical payload bit is written to 3 consecutive physical stream slots (then cyclic). */
 const TRIPLE_REDUNDANCY = 3;
 
+/**
+ * After triple-collapse, skip this many leading logical bits before interpreting magic + length + id
+ * (decode pipeline offset vs embed; aligns CGW 0x03 read window).
+ */
+const EXTRACT_COLLAPSED_LEADING_SKIP_BITS = 5;
+
+function collapsedLogicalBitCountForLen(len: number): number {
+  return (6 + len) * 8 + EXTRACT_COLLAPSED_LEADING_SKIP_BITS;
+}
+
+/** Physical stream length (bits) for one candidate UTF-8 length `len`, including preamble logical bits. */
+function physicalStreamBitLengthForLen(len: number): number {
+  return TRIPLE_REDUNDANCY * collapsedLogicalBitCountForLen(len);
+}
+
+/** Payload bits only: magic(4) + uint16BE len + utf8 id — after leading skip on collapsed stream. */
+function sliceCollapsedPayloadBits(
+  collapsed: number[],
+  payloadByteLen: number
+): number[] | null {
+  const total = EXTRACT_COLLAPSED_LEADING_SKIP_BITS + payloadByteLen * 8;
+  if (collapsed.length < total) return null;
+  return collapsed.slice(
+    EXTRACT_COLLAPSED_LEADING_SKIP_BITS,
+    EXTRACT_COLLAPSED_LEADING_SKIP_BITS + payloadByteLen * 8
+  );
+}
+
+function collapsedBitsAlignedForMagicHex(bits: number[] | null): number[] | null {
+  if (!bits || bits.length < EXTRACT_COLLAPSED_LEADING_SKIP_BITS + 32) return bits;
+  return bits.slice(EXTRACT_COLLAPSED_LEADING_SKIP_BITS);
+}
+
 export type WatermarkExtractFailureCode =
   | "magic_missing"
   | "unsupported_version"
@@ -442,11 +475,6 @@ function blockGridDims(width: number, height: number): {
   };
 }
 
-/** Interior linear k → block coords; k=0 is tile (1,1), pixel origin (8,8). */
-function blockIndexFromTile(bx: number, by: number, ibw: number): number {
-  return (by - 1) * ibw + (bx - 1);
-}
-
 function blockIndexToCoords(
   k: number,
   ibw: number
@@ -495,12 +523,13 @@ function embedBitInBlock(
   }
 }
 
-/**
- * Decode one bit from mid-frequency DCT gap (coeff (3,1) minus (1,3)).
- * TEMP diagnostic: no threshold — sign-only (magic / noise probe on Vercel).
- */
+/** Decode one bit from mid-frequency DCT gap (coeff (3,1) minus (1,3)). */
 function decodeBitFromMidfreqGap(gap: number): number {
-  return gap >= 0 ? 1 : 0;
+  if (gap > EXTRACT_GAP) return 1;
+  if (gap < -EXTRACT_GAP) return 0;
+  if (gap > 0) return 1;
+  if (gap < 0) return 0;
+  return 0;
 }
 
 /**
@@ -519,72 +548,6 @@ function readBitFromBlock(
   const coeff = dct8x8(readLumaBlock(data, width, height, bx, by));
   const gap = coeff[COEFF_A]! - coeff[COEFF_B]!;
   return decodeBitFromMidfreqGap(gap);
-}
-
-/**
- * Same layout as canvas `ImageData.data`: row-major RGBA, `(y*width+x)*4 + {0:R,1:G,2:B,3:A}`.
- * Pixel (0,0) is always `data[0..3]` — if embed vs extract differ, suspect row stride, crop, or color pipeline.
- */
-function logFirstPixelRgbaImageDataOrder(
-  phase: "embed" | "extract",
-  data: Buffer,
-  width: number,
-  extras?: Record<string, unknown>
-): void {
-  const o = 0;
-  const r = data[o]!;
-  const g = data[o + 1]!;
-  const b = data[o + 2]!;
-  const a = data[o + 3]!;
-  const protectRedMarker =
-    r === 255 && g === 0 && b === 0 && a === 255;
-  console.log("[Creator Guard DCT] first_pixel_rgba_ImageData.data[0..3]", {
-    phase,
-    data0_R: r,
-    data1_G: g,
-    data2_B: b,
-    data3_A: a,
-    tuple: [r, g, b, a],
-    rowStrideBytes: width * 4,
-    protectRedMarker_syncProbe:
-      phase === "extract"
-        ? protectRedMarker
-        : undefined,
-    protectRedMarker_note:
-      phase === "extract"
-        ? protectRedMarker
-          ? "matches /api/protect TEMP (0,0) red marker — top-left indexing aligned"
-          : "no red at (0,0); not from protect API, marker stripped, or buffer shifted"
-        : undefined,
-    ...extras,
-  });
-}
-
-/** First **interior** embed tile (bx=1,by=1) — pixel origin (8,8); edge block (0,0) is skipped. */
-function logFirstInteriorBlockDctCoefficients(
-  phase: "embed" | "extract",
-  data: Buffer,
-  width: number,
-  height: number
-): void {
-  const coeff = dct8x8(readLumaBlock(data, width, height, 1, 1));
-  const dc = coeff[0]!;
-  const a = coeff[COEFF_A]!;
-  const b = coeff[COEFF_B]!;
-  const label = phase === "embed" ? "Embed" : "Extract";
-  console.log(
-    `[Creator Guard DCT] coeff_compare_interior_block11 ${label}: A=${a}, B=${b}`
-  );
-  console.log("[Creator Guard DCT] block(1,1)_interior_first_embed_tile", phase, {
-    width,
-    height,
-    pixelOrigin: { x: 8, y: 8 },
-    dcCoefficient: dc,
-    coeffA: a,
-    coeffB: b,
-    gapAB: a - b,
-    all64: Array.from(coeff),
-  });
 }
 
 /**
@@ -641,33 +604,6 @@ function uint16BEFromBits32Through47(bits: number[]): number | null {
   const hi = pack8BitsToByteOrMsbFirst(bits, 32);
   const lo = pack8BitsToByteOrMsbFirst(bits, 40);
   return (hi << 8) | lo;
-}
-
-/** MSB-first bit string for `CGW` only (24 bits) — used for sliding alignment search. */
-function cgwMsbFirst24BitPattern(): string {
-  return payloadBufferToBigEndianBits(WATERMARK_MAGIC_V3.subarray(0, 3)).join("");
-}
-
-function findAllBitSubstringStarts(
-  haystack: number[],
-  needleBitStr: string,
-  maxHaystackBits: number
-): number[] {
-  const needle = needleBitStr.split("").map((c) => (c === "1" ? 1 : 0));
-  const hlen = Math.min(haystack.length, maxHaystackBits);
-  if (needle.length === 0 || hlen < needle.length) return [];
-  const hits: number[] = [];
-  for (let start = 0; start <= hlen - needle.length; start++) {
-    let ok = true;
-    for (let i = 0; i < needle.length; i++) {
-      if ((haystack[start + i]! & 1) !== needle[i]!) {
-        ok = false;
-        break;
-      }
-    }
-    if (ok) hits.push(start);
-  }
-  return hits;
 }
 
 /** Interpret 32 bits starting at `bitShift` as 4 big-endian bytes; return lowercase hex. */
@@ -732,6 +668,10 @@ function bitShiftHex0to7Object(
   return o;
 }
 
+/** Minimum collapsed bits so offset_7 hex (shift 7 + 32) exists after leading skip. */
+const MIN_COLLAPSED_BITS_FOR_SHIFT_HEX =
+  EXTRACT_COLLAPSED_LEADING_SKIP_BITS + 39;
+
 /** Same collapsed stream used for verify `bitShiftHex0to7` (len10 → len1 → padded linear). */
 function primaryCollapsedBitsForShiftScan(opts: {
   auditCollapsedLen10: number[] | null;
@@ -741,16 +681,18 @@ function primaryCollapsedBitsForShiftScan(opts: {
 }): number[] {
   const { auditCollapsedLen10, auditCollapsedLen1, blockBits, count } = opts;
   let primaryCollapsed: number[] | null =
-    auditCollapsedLen10 && auditCollapsedLen10.length >= 39
+    auditCollapsedLen10 &&
+    auditCollapsedLen10.length >= MIN_COLLAPSED_BITS_FOR_SHIFT_HEX
       ? auditCollapsedLen10
-      : auditCollapsedLen1 && auditCollapsedLen1.length >= 39
+      : auditCollapsedLen1 &&
+          auditCollapsedLen1.length >= MIN_COLLAPSED_BITS_FOR_SHIFT_HEX
         ? auditCollapsedLen1
         : null;
 
-  if (!primaryCollapsed || primaryCollapsed.length < 39) {
+  if (!primaryCollapsed || primaryCollapsed.length < MIN_COLLAPSED_BITS_FOR_SHIFT_HEX) {
     const linear: number[] = [];
     for (let i = 0; i < count; i++) linear.push(blockBits[i]! & 1);
-    while (linear.length < 40) linear.push(0);
+    while (linear.length < MIN_COLLAPSED_BITS_FOR_SHIFT_HEX) linear.push(0);
     primaryCollapsed = linear;
   }
 
@@ -791,24 +733,34 @@ function buildWatermarkVerifyExtractDebug(opts: {
     blockBits,
     count,
   });
+  const alignedForMagicHex =
+    collapsedBitsAlignedForMagicHex(collapsedForShiftHex) ?? collapsedForShiftHex;
 
   const collapsedFor64 =
-    auditCollapsedLen10 && auditCollapsedLen10.length >= 64
-      ? auditCollapsedLen10
-      : auditCollapsedLen1 && auditCollapsedLen1.length >= 64
-        ? auditCollapsedLen1
+    auditCollapsedLen10 &&
+    auditCollapsedLen10.length >= EXTRACT_COLLAPSED_LEADING_SKIP_BITS + 64
+      ? auditCollapsedLen10.slice(
+          EXTRACT_COLLAPSED_LEADING_SKIP_BITS,
+          EXTRACT_COLLAPSED_LEADING_SKIP_BITS + 64
+        )
+      : auditCollapsedLen1 &&
+          auditCollapsedLen1.length >= EXTRACT_COLLAPSED_LEADING_SKIP_BITS + 64
+        ? auditCollapsedLen1.slice(
+            EXTRACT_COLLAPSED_LEADING_SKIP_BITS,
+            EXTRACT_COLLAPSED_LEADING_SKIP_BITS + 64
+          )
         : null;
   const collapsedFirst64 = collapsedFor64
-    ? collapsedFor64.slice(0, 64).join("")
+    ? collapsedFor64.join("")
     : null;
 
   return {
     physicalFirst64,
     collapsedFirst64,
-    bitShiftHex0to7: buildBitShiftHex0to7Struct(collapsedForShiftHex),
+    bitShiftHex0to7: buildBitShiftHex0to7Struct(alignedForMagicHex),
     bitShiftHex0to7Source: "scan_v4",
     bitShiftHex0to7CollapsedLen1: bitShiftHex0to7Object(
-      auditCollapsedLen1,
+      collapsedBitsAlignedForMagicHex(auditCollapsedLen1) ?? auditCollapsedLen1,
       "verify collapsed len=1"
     ),
     grid: {
@@ -893,43 +845,13 @@ export function embedMemberIdDct(image: BitmapLike, userId: string): void {
   const expandedBits = tripleExpandPayloadBits(payloadBits);
   const Lphy = expandedBits.length;
   const { data, width, height } = image.bitmap;
-  const { bw, bh, count, usableW, usableH, fullBw, fullBh } = blockGridDims(
-    width,
-    height
-  );
+  const { bw, bh, count, fullBw, fullBh } = blockGridDims(width, height);
 
   if (count < Lphy) {
     throw new Error(
       `Image too small for cyclic DCT watermark: need at least ${Lphy} interior 8×8 blocks (triple stream), have ${count} (${bw}×${bh} interior; full ${fullBw}×${fullBh})`
     );
   }
-
-  const head16 = payloadBits.slice(0, 16).join("");
-  const b0 = blockIndexToCoords(0, bw);
-  console.log("[Creator Guard DCT] embed_bitstream_head16", {
-    first16Bits_logicalPayload: head16,
-    expectedMagicPrefix16: expectedMagicBigEndian32().slice(0, 16),
-    prefixMatchesMagic: head16 === expectedMagicBigEndian32().slice(0, 16),
-    logicalBitLen: payloadBits.length,
-    physicalExpandedLen: Lphy,
-    TRIPLE_REDUNDANCY,
-    EMBED_GAP,
-    grid: {
-      interiorBw: bw,
-      interiorBh: bh,
-      interiorCount: count,
-      fullBw,
-      fullBh,
-      usableW,
-      usableH,
-      bitmapW: width,
-      bitmapH: height,
-      skipEdgeRowCol: "blocks bx=0 or by=0 skipped; first tile bx=1,by=1 → pixel (8,8)",
-    },
-    interiorLinear0: { bx: b0.bx, by: b0.by, x0: b0.bx * 8, y0: b0.by * 8 },
-    tileRule:
-      "k → bx=1+k%ibw, by=1+floor(k/ibw); interior only (ibw=fullBw-1, ibh=fullBh-1)",
-  });
 
   for (let k = 0; k < count; k++) {
     const { bx, by } = blockIndexToCoords(k, bw);
@@ -939,10 +861,6 @@ export function embedMemberIdDct(image: BitmapLike, userId: string): void {
 
   enforceBitmapOpaque(data, width, height);
   flattenBitmapToOpaqueRgb(image.bitmap);
-  logFirstPixelRgbaImageDataOrder("embed", data, width, {
-    note: "/api/protect may overwrite (0,0) with red AFTER embed — compare extract to that PNG",
-  });
-  logFirstInteriorBlockDctCoefficients("embed", data, width, height);
 }
 
 export function extractMemberIdDctDetailed(
@@ -953,129 +871,24 @@ export function extractMemberIdDctDetailed(
   const { data, width, height } = image.bitmap;
   enforceBitmapOpaque(data, width, height);
 
-  const { bw, bh, count, usableW, usableH, fullBw, fullBh } = blockGridDims(
-    width,
-    height
-  );
+  const { bw, bh, count, fullBw, fullBh } = blockGridDims(width, height);
 
   if (width < 16 || height < 16 || count === 0) {
     return { ok: false, code: "capacity" };
   }
 
-  logFirstPixelRgbaImageDataOrder("extract", data, width);
-
   /**
-   * Extract does **not** call `payloadBufferToBigEndianBits` on a substring.
-   * For candidate utf8 length `len`, we pack **full** `6+len` bytes: magic(4) + uint16BE length(2) + id(len).
-   * `bigEndianBitsToBuffer(allBits, 6+len)` includes those bits; `readUInt16BE(4)` must equal `len` to accept.
+   * Collapsed logical stream includes `EXTRACT_COLLAPSED_LEADING_SKIP_BITS` before magic; payload
+   * is magic(4) + uint16BE len + utf8 id — same as embed after skip.
    */
-  console.log("[Creator Guard DCT] extract_bitstream_layout", {
-    payloadBufferToBigEndianBits_usedOnEmbedOnly: true,
-    physicalStreamLen: "3 × (6+len)×8 bits per candidate; collapseTriplePhysicalBits → logical (6+len)×8",
-    extractPacksFullPayloadBytes: "6 + len (magic + length field + utf8 id) after collapse",
-    lengthFieldNotSkipped:
-      "uint16 read from collapsed bits [32,47]; cross-checked with buf.readUInt16BE(4)",
-    bitIndexBoundaries: {
-      magic:
-        "collapsed bits [0,31] → payload bytes [0..3] (CGW\\x03); length starts at bit 32",
-      lengthUint16BE:
-        "collapsed bits [32,47] → uint16BE; must equal candidate len",
-      memberIdUtf8: "collapsed bits [48, …] → utf8 id",
-    },
-  });
-
-  logFirstInteriorBlockDctCoefficients("extract", data, width, height);
-
   const blockBits: number[] = new Array(count);
-  const gapsFirst32: number[] = [];
-  const gapsFirst10: number[] = [];
-  const coeffA_first8: number[] = [];
-  const coeffB_first8: number[] = [];
   for (let k = 0; k < count; k++) {
     const { bx, by } = blockIndexToCoords(k, bw);
-    const coeff = dct8x8(readLumaBlock(data, width, height, bx, by));
-    const a = coeff[COEFF_A]!;
-    const b = coeff[COEFF_B]!;
-    const gap = a - b;
-    if (k < 10) {
-      gapsFirst10.push(gap);
-      if (Math.abs(gap) < 0.0001) {
-        console.log("QUANTIZATION_WIPE_DETECTED at block", k);
-      }
-    }
-    if (k < 32) gapsFirst32.push(gap);
-    if (k < 8) {
-      coeffA_first8.push(a);
-      coeffB_first8.push(b);
-    }
-    blockBits[k] = decodeBitFromMidfreqGap(gap);
+    blockBits[k] = readBitFromBlock(data, width, height, bx, by);
   }
 
-  console.log(
-    "RAW_GAPS_CHECK:",
-    gapsFirst10.map((g) => g.toFixed(6))
-  );
-
-  if (gapsFirst32.length > 0) {
-    const maxAbs = gapsFirst32.reduce((m, g) => Math.max(m, Math.abs(g)), 0);
-    const inAmbiguousBand = gapsFirst32.filter(
-      (g) => Math.abs(g) <= EXTRACT_GAP
-    ).length;
-    if (maxAbs <= EXTRACT_GAP * 2 || inAmbiguousBand >= gapsFirst32.length * 0.75) {
-      console.warn("[Creator Guard DCT] extract_midfreq_gap_weak_signal", {
-        EXTRACT_GAP,
-        COEFF_A,
-        COEFF_B,
-        gapsFirst32_min: Math.min(...gapsFirst32),
-        gapsFirst32_max: Math.max(...gapsFirst32),
-        gapsFirst32_maxAbs: maxAbs,
-        ambiguousBandCount_first32: inAmbiguousBand,
-        coeffA_first8,
-        coeffB_first8,
-        note:
-          "Raw DCT (3,1) vs (1,3); |gap| small → was collapsing to all 0; now sign-based in band",
-      });
-    }
-  }
-
-  const coeffI = dct8x8(readLumaBlock(data, width, height, 1, 1));
-  const gapI = coeffI[COEFF_A]! - coeffI[COEFF_B]!;
-  if (Math.abs(gapI) <= EXTRACT_GAP * 2) {
-    console.warn("[Creator Guard DCT] block(1,1)_emergency_near_zero_gap", {
-      coeffA: coeffI[COEFF_A],
-      coeffB: coeffI[COEFF_B],
-      gap: gapI,
-      readBit_interiorLinear0: blockBits[0],
-      EXTRACT_GAP,
-    });
-  }
-
-  const raw32Blocks = blockBits.slice(0, Math.min(32, blockBits.length));
-  console.log(
-    "[Creator Guard DCT] raw_blockBits_first32_no_byte_conversion",
-    JSON.stringify(raw32Blocks)
-  );
-
-  const maxLphyBruteforce =
-    TRIPLE_REDUNDANCY * (6 + MAX_USER_ID_BYTES) * 8;
-  const Lphy_len1 = TRIPLE_REDUNDANCY * (6 + 1) * 8;
-  const Lphy_len10 = TRIPLE_REDUNDANCY * (6 + 10) * 8;
-
-  const interiorGapsFirst10: {
-    k: number;
-    bx: number;
-    by: number;
-    gapAB: number;
-  }[] = [];
-  for (let k = 0; k < Math.min(10, count); k++) {
-    const { bx, by } = blockIndexToCoords(k, bw);
-    interiorGapsFirst10.push({
-      k,
-      bx,
-      by,
-      gapAB: blockCoeffGap(data, width, height, bx, by),
-    });
-  }
+  const Lphy_len1 = physicalStreamBitLengthForLen(1);
+  const Lphy_len10 = physicalStreamBitLengthForLen(10);
 
   let auditPhysicalLen1: number[] | null = null;
   let auditCollapsedLen1: number[] | null = null;
@@ -1087,32 +900,8 @@ export function extractMemberIdDctDetailed(
       count,
       Lphy_len1
     );
-    if (auditPhysicalLen1 && auditPhysicalLen1.length >= 32) {
-      console.log(
-        "[Creator Guard DCT] reconstructed_physical_first32_len1",
-        JSON.stringify(auditPhysicalLen1.slice(0, 32))
-      );
+    if (auditPhysicalLen1) {
       auditCollapsedLen1 = collapseTriplePhysicalBits(auditPhysicalLen1);
-      if (auditCollapsedLen1 && auditCollapsedLen1.length >= 32) {
-        console.log(
-          "[Creator Guard DCT] collapsed_logical_first32_len1_candidate",
-          JSON.stringify(auditCollapsedLen1.slice(0, 32))
-        );
-        let mismatch = false;
-        const cmp: { byteIndex: number; shift: number; orMsb: number }[] = [];
-        for (let bi = 0; bi < 4; bi++) {
-          const base = bi * 8;
-          const a = pack8BitsToByteShift(auditCollapsedLen1, base);
-          const b = pack8BitsToByteOrMsbFirst(auditCollapsedLen1, base);
-          if (a !== b) mismatch = true;
-          cmp.push({ byteIndex: bi, shift: a, orMsb: b });
-        }
-        console.log("[Creator Guard DCT] pack8_shift_vs_orMsbFirst_first4bytes", {
-          mismatch,
-          note: "on collapsed logical stream; first bit is MSB of magic byte 0",
-          cmp,
-        });
-      }
     }
   }
 
@@ -1124,66 +913,6 @@ export function extractMemberIdDctDetailed(
     );
     if (p10) auditCollapsedLen10 = collapseTriplePhysicalBits(p10);
   }
-
-  const cgw24 = cgwMsbFirst24BitPattern();
-  const phys128 =
-    auditPhysicalLen1 && auditPhysicalLen1.length >= 128
-      ? auditPhysicalLen1.slice(0, 128)
-      : (auditPhysicalLen1 ?? []).slice(0, 128);
-  const hitsCgwPhysical = findAllBitSubstringStarts(phys128, cgw24, 128);
-
-  const collapsedSearch =
-    auditCollapsedLen10 && auditCollapsedLen10.length >= 128
-      ? auditCollapsedLen10.slice(0, 128)
-      : auditCollapsedLen1 && auditCollapsedLen1.length >= 128
-        ? auditCollapsedLen1.slice(0, 128)
-        : auditCollapsedLen10 ?? auditCollapsedLen1 ?? [];
-  const hitsCgwCollapsed = findAllBitSubstringStarts(
-    collapsedSearch,
-    cgw24,
-    Math.min(128, collapsedSearch.length)
-  );
-
-  console.log("[Creator Guard DCT] extract_bit_sync_audit", {
-    bruteForcePhysicalStream: {
-      interiorBlockCount: count,
-      Lphy_len1: Lphy_len1,
-      maxLphy_allLens: maxLphyBruteforce,
-      count_covers_full_bruteforce_loop: count >= maxLphyBruteforce,
-      note: "each len needs reconstruct length Lphy = 3*(6+len)*8; count must be >= Lphy",
-    },
-    luma_gapAB_first10_interior_blocks: interiorGapsFirst10,
-    smallGapHint:
-      "if |gapAB| < 5 on most blocks, mark may be quantized away (check EMBED_GAP vs PNG)",
-    cgw24BitPattern_msbFirst: cgw24,
-    search_cgw24_in_first128_physical_len1: {
-      bitsAvailable: phys128.length,
-      hitStartIndices: hitsCgwPhysical,
-      suspectBitAlignment_shift1to3: hitsCgwPhysical.filter(
-        (i) => i >= 1 && i <= 3
-      ),
-    },
-    search_cgw24_collapsed_first128: {
-      collapsedSource:
-        auditCollapsedLen10 && auditCollapsedLen10.length >= 128
-          ? "len10"
-          : auditCollapsedLen1 && auditCollapsedLen1.length >= 128
-            ? "len1"
-            : "short_stream",
-      bitsSearched: Math.min(128, collapsedSearch.length),
-      hitStartIndices: hitsCgwCollapsed,
-    },
-    first4bytes_hex_offsets_0_to_7_collapsed_len1: bitShiftHex0to7Object(
-      auditCollapsedLen1,
-      "collapsed len=1"
-    ),
-    first4bytes_hex_offsets_0_to_7_collapsed_len10: bitShiftHex0to7Object(
-      auditCollapsedLen10 && auditCollapsedLen10.length >= 39
-        ? auditCollapsedLen10
-        : null,
-      "collapsed len=10"
-    ),
-  });
 
   const verifyDebug: WatermarkVerifyExtractDebug =
     buildWatermarkVerifyExtractDebug({
@@ -1206,141 +935,35 @@ export function extractMemberIdDctDetailed(
   const enforceSyncMarker =
     process.env.CREATOR_GUARD_ENFORCE_SYNC_MARKER === "1";
   if (!syncOk) {
-    console.error("[Creator Guard DCT] sync_probe_false", {
-      rgba0: [data[0], data[1], data[2], data[3]],
-      expectedProtectDebug: [255, 0, 0, 255],
-      hint: "Fix canvas / stride / 1px offset at (0,0) before trusting DCT — a shifted buffer makes all blocks wrong.",
-      setEnforce:
-        "Set CREATOR_GUARD_ENFORCE_SYNC_MARKER=1 to abort extract when marker is missing (debug).",
-      enforceSyncMarker,
-    });
     if (enforceSyncMarker) {
       return { ok: false, code: "sync_offset", debug: verifyDebug };
     }
   }
 
-  const raw16 =
-    count >= 16 ? blockBits.slice(0, 16) : blockBits.slice(0, Math.min(16, count));
-  const raw16Str = raw16.join("");
-  const magicPrefix16 = expectedMagicBigEndian32().slice(0, 16);
-  const b0ex = blockIndexToCoords(0, bw);
-  console.log("[Creator Guard DCT] extract_blockstream_head16_pre_majority", {
-    rawBits_blocks0to15: raw16,
-    bitString16: raw16Str,
-    expectedMagicPrefix16: magicPrefix16,
-    matchesEmbedMagicPrefix16: raw16Str === magicPrefix16,
-    compareToLog_embed_bitstream_head16_first16Bits: raw16Str,
-    grid: {
-      width,
-      height,
-      interiorBw: bw,
-      interiorBh: bh,
-      interiorCount: count,
-      fullBw,
-      fullBh,
-      usableW,
-      usableH,
-      interiorLinear0: {
-        bx: b0ex.bx,
-        by: b0ex.by,
-        x0: b0ex.bx * 8,
-        y0: b0ex.by * 8,
-      },
-      dataRowStrideBytes: width * 4,
-      originTopLeft: true,
-    },
-  });
-
-  const lenHead4Dump: {
-    len: number;
-    L: number;
-    ok: boolean;
-    skipReason?: string;
-    head4Hex?: string;
-    head4Bytes?: number[];
-    escLiteral?: string;
-    smoke_reversed_x03WGC?: boolean;
-    smoke_null_x00_CGW?: boolean;
-  }[] = [];
   for (let len = 1; len <= MAX_USER_ID_BYTES; len++) {
-    const Lphy = TRIPLE_REDUNDANCY * (6 + len) * 8;
-    if (count < Lphy) {
-      lenHead4Dump.push({ len, L: Lphy, ok: false, skipReason: "count_lt_Lphy" });
-      continue;
-    }
-    const allBits = reconstructBigEndianBitsFromBlocks(blockBits, count, Lphy);
-    if (!allBits || allBits.length !== Lphy) {
-      lenHead4Dump.push({ len, L: Lphy, ok: false, skipReason: "reconstruct" });
-      continue;
-    }
-    const collapsed = collapseTriplePhysicalBits(allBits);
-    if (!collapsed || collapsed.length !== (6 + len) * 8) {
-      lenHead4Dump.push({ len, L: Lphy, ok: false, skipReason: "collapse" });
-      continue;
-    }
-    const buf = bigEndianBitsToBuffer(collapsed, 6 + len);
-    if (!buf || buf.length < 4) {
-      lenHead4Dump.push({ len, L: Lphy, ok: false, skipReason: "pack_buffer" });
-      continue;
-    }
-    const h0 = buf[0]!;
-    const h1 = buf[1]!;
-    const h2 = buf[2]!;
-    const h3 = buf[3]!;
-    const escLiteral = `\\x${h0.toString(16).padStart(2, "0")}\\x${h1
-      .toString(16)
-      .padStart(2, "0")}\\x${h2.toString(16).padStart(2, "0")}\\x${h3
-      .toString(16)
-      .padStart(2, "0")}`;
-    lenHead4Dump.push({
-      len,
-      L: Lphy,
-      ok: true,
-      head4Hex: buf.subarray(0, 4).toString("hex"),
-      head4Bytes: [h0, h1, h2, h3],
-      escLiteral,
-      smoke_reversed_x03WGC:
-        h0 === 0x03 && h1 === 0x57 && h2 === 0x47 && h3 === 0x43,
-      smoke_null_x00_CGW:
-        h0 === 0x00 && h1 === 0x43 && h2 === 0x47 && h3 === 0x57,
-    });
-  }
-  console.log("[Creator Guard DCT] extract_all_len_reconstruct_head4_dump", {
-    expectedMagicHead4: WATERMARK_MAGIC_V3.subarray(0, 4).toString("hex"),
-    note: "smoke_reversed_x03WGC ~ \\x03WGC order; smoke_null_x00_CGW ~ \\x00CGW byte-offset",
-    rows: lenHead4Dump,
-  });
-
-  const expectedHdr32 = expectedMagicBigEndian32();
-
-  for (let len = 1; len <= MAX_USER_ID_BYTES; len++) {
-    const Lphy = TRIPLE_REDUNDANCY * (6 + len) * 8;
+    const Lphy = physicalStreamBitLengthForLen(len);
     if (count < Lphy) continue;
 
     const allBits = reconstructBigEndianBitsFromBlocks(blockBits, count, Lphy);
     if (!allBits || allBits.length !== Lphy) continue;
 
     const collapsed = collapseTriplePhysicalBits(allBits);
-    if (!collapsed || collapsed.length !== (6 + len) * 8) continue;
+    const needCollapsed = collapsedLogicalBitCountForLen(len);
+    if (!collapsed || collapsed.length !== needCollapsed) continue;
 
-    const buf = bigEndianBitsToBuffer(collapsed, 6 + len);
+    const payloadBits = sliceCollapsedPayloadBits(collapsed, 6 + len);
+    if (!payloadBits || payloadBits.length !== (6 + len) * 8) continue;
+
+    const buf = bigEndianBitsToBuffer(payloadBits, 6 + len);
     if (!buf || buf.length < 6 + len) continue;
 
-    const declaredLenBits32_47 = uint16BEFromBits32Through47(collapsed);
+    const declaredLenBits32_47 = uint16BEFromBits32Through47(payloadBits);
     if (declaredLenBits32_47 === null || declaredLenBits32_47 !== len) {
       continue;
     }
 
     const declaredFromPacked = buf.readUInt16BE(4);
     if (declaredFromPacked !== declaredLenBits32_47) {
-      console.error(
-        "[Creator Guard DCT] length_uint16_mismatch_bits32_47_vs_buffer",
-        {
-          lenCandidate: len,
-          declaredLenBits32_47,
-          readUInt16BE_at_byte4: declaredFromPacked,
-        }
-      );
       continue;
     }
 
@@ -1368,113 +991,17 @@ export function extractMemberIdDctDetailed(
     }
   }
 
-  const hdrDebug: {
-    len: number;
-    Lphy: number;
-    hdr32: string;
-    magic32Match: boolean;
-  }[] = [];
-  for (let len = 1; len <= MAX_USER_ID_BYTES; len++) {
-    const Lphy = TRIPLE_REDUNDANCY * (6 + len) * 8;
-    if (count < Lphy) continue;
-    const allBits = reconstructBigEndianBitsFromBlocks(blockBits, count, Lphy);
-    if (!allBits || allBits.length !== Lphy) continue;
-    const collapsed = collapseTriplePhysicalBits(allBits);
-    if (!collapsed || collapsed.length < 32) continue;
-    const hdr32 = collapsed.slice(0, 32).join("");
-    hdrDebug.push({
-      len,
-      Lphy,
-      hdr32,
-      magic32Match: hdr32 === expectedHdr32,
-    });
-  }
-
-  const bitShiftProbe: {
-    len: number;
-    collapsedFirst64: string;
-    physicalFirst64: string;
-  }[] = [];
-  for (let len = 1; len <= Math.min(8, MAX_USER_ID_BYTES); len++) {
-    const Lphy = TRIPLE_REDUNDANCY * (6 + len) * 8;
-    if (count < Lphy) continue;
-    const physical = reconstructBigEndianBitsFromBlocks(blockBits, count, Lphy);
-    if (!physical || physical.length < 64) continue;
-    const collapsed = collapseTriplePhysicalBits(physical);
-    bitShiftProbe.push({
-      len,
-      physicalFirst64: physical.slice(0, 64).join(""),
-      collapsedFirst64:
-        collapsed && collapsed.length >= 64
-          ? collapsed.slice(0, 64).join("")
-          : "(collapse_short)",
-    });
-  }
-
-  console.error("[Creator Guard DCT] magic_missing", {
-    grid: { interiorBw: bw, interiorBh: bh, interiorCount: count, fullBw, fullBh },
-    interiorBlock0_is_tile_11: blockIndexFromTile(1, 1, bw) === 0,
-    TRIPLE_REDUNDANCY,
-    maxLphy_bruteforce: maxLphyBruteforce,
-    count_covers_max_bruteforce: count >= maxLphyBruteforce,
-    expectedHdr32,
-    expectedMagicHex: WATERMARK_MAGIC_V3.subarray(0, 4).toString("hex"),
-    headerSnapshots: hdrDebug.slice(0, 24),
-    stream_first64bits_msbFirst: {
-      physical_len1:
-        auditPhysicalLen1 && auditPhysicalLen1.length >= 64
-          ? auditPhysicalLen1.slice(0, 64).join("")
-          : null,
-      collapsed_len1:
-        auditCollapsedLen1 && auditCollapsedLen1.length >= 64
-          ? auditCollapsedLen1.slice(0, 64).join("")
-          : null,
-      collapsed_len10:
-        auditCollapsedLen10 && auditCollapsedLen10.length >= 64
-          ? auditCollapsedLen10.slice(0, 64).join("")
-          : null,
-    },
-    first4bytes_hex_offsets_0_to_7_magic_missing: {
-      collapsed_len1: bitShiftHex0to7Object(
-        auditCollapsedLen1,
-        "magic_missing collapsed len=1"
-      ),
-      collapsed_len10: bitShiftHex0to7Object(
-        auditCollapsedLen10 && auditCollapsedLen10.length >= 39
-          ? auditCollapsedLen10
-          : null,
-        "magic_missing collapsed len=10"
-      ),
-      physical_len1: bitShiftHex0to7Object(
-        auditPhysicalLen1 && auditPhysicalLen1.length >= 39
-          ? auditPhysicalLen1
-          : null,
-        "magic_missing physical len=1 (triple stream; head is not single CGW bytes)"
-      ),
-    },
-    bitShiftProbe_collapsed_vs_physical_first64:
-      "if magic appears shifted in collapsedFirst64 vs expectedHdr32, check bit alignment",
-    bitShiftProbe,
-  });
-
-  const extractedBits = primaryCollapsedBitsForShiftScan({
+  const rawCollapsed = primaryCollapsedBitsForShiftScan({
     auditCollapsedLen10,
     auditCollapsedLen1,
     blockBits,
     count,
   });
+  const alignedMagic =
+    collapsedBitsAlignedForMagicHex(rawCollapsed) ?? rawCollapsed;
   const debugData: WatermarkVerifyExtractDebug = {
     ...verifyDebug,
-    bitShiftHex0to7: {
-      offset_0_hex: getHexAtShift(extractedBits, 0),
-      offset_1_hex: getHexAtShift(extractedBits, 1),
-      offset_2_hex: getHexAtShift(extractedBits, 2),
-      offset_3_hex: getHexAtShift(extractedBits, 3),
-      offset_4_hex: getHexAtShift(extractedBits, 4),
-      offset_5_hex: getHexAtShift(extractedBits, 5),
-      offset_6_hex: getHexAtShift(extractedBits, 6),
-      offset_7_hex: getHexAtShift(extractedBits, 7),
-    },
+    bitShiftHex0to7: buildBitShiftHex0to7Struct(alignedMagic),
     bitShiftHex0to7Source: "scan_v4",
   };
 

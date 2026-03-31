@@ -21,7 +21,7 @@ export default function DebugVerifyPage() {
       const fd = new FormData();
       fd.set("file", file);
       try {
-        const res = await fetch("/api/verify-v4", { method: "POST", body: fd });
+        const res = await fetch("/api/verify", { method: "POST", body: fd });
         let data: unknown;
         try {
           data = await res.json();
@@ -54,7 +54,7 @@ export default function DebugVerifyPage() {
     >
       <h1 style={{ fontSize: 20, marginBottom: 8 }}>Debug verify</h1>
       <p style={{ fontSize: 14, color: "#444", marginBottom: 20 }}>
-        Route <code>/debug-verify</code> — raw fetch to <code>/api/verify-v4</code>.
+        Route <code>/debug-verify</code> — raw fetch to <code>/api/verify</code>.
       </p>
       <div style={{ display: "flex", flexWrap: "wrap", gap: 12, alignItems: "center" }}>
         <input type="file" id="file-input" accept="image/*" />
