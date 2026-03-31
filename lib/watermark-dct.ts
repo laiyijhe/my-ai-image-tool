@@ -32,18 +32,18 @@ export interface WatermarkVerifyExtractDebug {
 
 /**
  * Creator Guard — DCT v3 (production)
- * Cyclic 8×8 blocks, integer BT.601 luma, coefficients (3,1) vs (1,3) only, majority decode.
+ * Cyclic 8×8 blocks, integer BT.601 luma, Steel DCT (1,2) vs (2,1), 9× redundancy, magnitude gap decode.
  */
 export const WATERMARK_MAGIC_V3 = Buffer.from([0x43, 0x47, 0x57, 0x03]);
 
 const MAX_USER_ID_BYTES = 256;
 
 /**
- * Mid-frequency AC pair (typical DCT watermark band): (u,v) = (3,1) vs (1,3).
- * Row-major u*8+v — index 25 = (3,1), index 11 = (1,3). No other ACs participate.
+ * Mid-frequency AC pair — **Steel mode**: (u,v) = (1,2) vs (2,1), more robust to JPEG quant.
+ * Row-major u*8+v — index 10 = (1,2), index 17 = (2,1).
  */
-const COEFF_A = 3 * 8 + 1; // 25
-const COEFF_B = 1 * 8 + 3; // 11
+const COEFF_A = 1 * 8 + 2; // 10  (1,2)
+const COEFF_B = 2 * 8 + 1; // 17  (2,1)
 
 const ALPHA = 42;
 const EMBED_SCALE_MAX = 8;
@@ -51,32 +51,25 @@ const EMBED_VERIFY_ITERS = 14;
 const EMBED_SCALE_GROWTH = 1.12;
 
 /**
- * Embed: DCT margin target after clamp (was 25). **Temporarily 60** — quantization / PNG survival
- * experiment (user: if 60 works and ~25 didn’t, treat as quant/decode loss).
- * Extract: read threshold (unchanged).
+ * Embed (Steel): enforce **magnitude** separation `|DCT(COEFF_A)| − |DCT(COEFF_B)|`.
+ * Bit **1**: gap ≥ this; bit **0**: gap ≤ −this (i.e. |B| exceeds |A| by at least this margin).
  */
-const EMBED_GAP = 60;
-/**
- * Decode hysteresis on (coeff_A − coeff_B). Outside ±this band we use hard 0/1; inside (after PNG
- * etc.) we still use the **sign** of the gap so attenuated marks do not collapse to all-zero bits.
- */
-const EXTRACT_GAP = 2;
+const EMBED_MAG_GAP_TARGET = 15;
+
 const GAP_ENFORCE_MAX_STEPS = 192;
 
 /**
- * Extract-only: compare **magnitudes** |coeff(3,1)| vs |coeff(1,3)| (flat indices `COEFF_A` / `COEFF_B`).
- * Bit 1 iff `|A| − |B| > threshold` — less sensitive than signed `A−B` when noise biases weak positives.
+ * Read/extract: `|COEFF_A| − |COEFF_B|` vs this (embed uses `EMBED_MAG_GAP_TARGET` = 15 on disk).
  */
-const EXTRACT_MAG_GAP_THRESHOLD = 2.5;
+const EXTRACT_MAG_GAP_THRESHOLD = 5;
 
 /**
- * Extract-only: logical **1** only if all `TRIPLE_REDUNDANCY` physical reads are 1 (drops scattered
- * noise 1s). Any 0 in the triplet → logical 0.
+ * Extract-only: logical **1** only if **all** redundant physical reads are 1 (see `PHYSICAL_REDUNDANCY`).
  */
 const EXTRACT_TRIPLE_REQUIRE_UNANIMOUS_FOR_ONE = true;
 
-/** Same logical payload bit is written to 3 consecutive physical stream slots (then cyclic). */
-const TRIPLE_REDUNDANCY = 3;
+/** One logical payload bit → `PHYSICAL_REDUNDANCY` identical physical slots (cyclic across blocks). */
+const PHYSICAL_REDUNDANCY = 9;
 
 /**
  * Fallback collapsed-skip if brute-force scan (start indices 0..`MAGIC_BRUTE_FORCE_MAX_START_BIT`)
@@ -326,7 +319,7 @@ function physicalStreamBitLengthForLen(
   len: number,
   collapsedSkipBits: number
 ): number {
-  return TRIPLE_REDUNDANCY * collapsedLogicalBitCountForLen(len, collapsedSkipBits);
+  return PHYSICAL_REDUNDANCY * collapsedLogicalBitCountForLen(len, collapsedSkipBits);
 }
 
 /** Payload bits only: magic(4) + uint16BE len + utf8 id — after leading skip on collapsed stream. */
@@ -549,16 +542,18 @@ function applyBlockDeltaToRgb(
     }
   }
 
-  // Zero-tolerance: integer RGB clamp shrinks the DCT margin from the ideal IDCT delta.
-  // Re-read luma → DCT and widen until margin ≥ EMBED_GAP while readBit (EXTRACT_GAP) still matches.
+  // Zero-tolerance: integer RGB clamp shrinks the DCT magnitude margin from the ideal IDCT delta.
   const tb = opts?.targetBit;
   if (
     tb !== undefined &&
     readBitFromBlock(data, width, height, bx, by) === tb
   ) {
     for (let guard = 0; guard < 8; guard++) {
-      const gap = blockCoeffGap(data, width, height, bx, by);
-      const ok = tb === 1 ? gap > EMBED_GAP : gap < -EMBED_GAP;
+      const mg = blockMagGap(data, width, height, bx, by);
+      const ok =
+        tb === 1
+          ? mg >= EMBED_MAG_GAP_TARGET
+          : mg <= -EMBED_MAG_GAP_TARGET;
       if (ok && readBitFromBlock(data, width, height, bx, by) === tb) break;
       enforceMinDctGapAfterClamp(data, width, height, bx, by, tb);
     }
@@ -653,7 +648,13 @@ function bumpBlockRgbUniform(
   return changed;
 }
 
-function blockCoeffGap(
+/** Signed `|coeff[COEFF_A]| − |coeff[COEFF_B]|` (Steel read/embed classification). */
+function midfreqAbsMagGapFromCoeff(coeff: Float64Array): number {
+  return Math.abs(coeff[COEFF_A]!) - Math.abs(coeff[COEFF_B]!);
+}
+
+/** `|DCT(COEFF_A)| − |DCT(COEFF_B)|` after luma → DCT (Steel magnitude protocol). */
+function blockMagGap(
   data: Buffer,
   width: number,
   height: number,
@@ -661,12 +662,25 @@ function blockCoeffGap(
   by: number
 ): number {
   const coeff = dct8x8(readLumaBlock(data, width, height, bx, by));
-  return coeff[COEFF_A]! - coeff[COEFF_B]!;
+  return midfreqAbsMagGapFromCoeff(coeff);
+}
+
+function embedSatisfiesMagProtocol(
+  data: Buffer,
+  width: number,
+  height: number,
+  bx: number,
+  by: number,
+  bit: number
+): boolean {
+  const mg = blockMagGap(data, width, height, bx, by);
+  return bit === 1
+    ? mg >= EMBED_MAG_GAP_TARGET
+    : mg <= -EMBED_MAG_GAP_TARGET;
 }
 
 /**
- * After IDCT+clamp, widen coeff_A - coeff_B margin without flipping the stored bit.
- * Rolls back any nudge that breaks protocol symmetry.
+ * After IDCT+clamp, widen **magnitude** gap without flipping the stored bit.
  */
 function enforceMinDctGapAfterClamp(
   data: Buffer,
@@ -679,8 +693,9 @@ function enforceMinDctGapAfterClamp(
   const snap = new Uint8Array(64 * 3);
 
   for (let step = 0; step < GAP_ENFORCE_MAX_STEPS; step++) {
-    const gap = blockCoeffGap(data, width, height, bx, by);
-    const ok = bit === 1 ? gap > EMBED_GAP : gap < -EMBED_GAP;
+    const mg = blockMagGap(data, width, height, bx, by);
+    const ok =
+      bit === 1 ? mg >= EMBED_MAG_GAP_TARGET : mg <= -EMBED_MAG_GAP_TARGET;
     if (ok && readBitFromBlock(data, width, height, bx, by) === bit) return;
 
     copyBlockRgb(data, width, height, bx, by, snap);
@@ -691,9 +706,8 @@ function enforceMinDctGapAfterClamp(
       pasteBlockRgb(data, width, height, bx, by, snap);
       return;
     }
-    const gap2 = blockCoeffGap(data, width, height, bx, by);
-    const better =
-      bit === 1 ? gap2 > gap : gap2 < gap;
+    const mg2 = blockMagGap(data, width, height, bx, by);
+    const better = bit === 1 ? mg2 > mg : mg2 < mg;
     if (!better) {
       pasteBlockRgb(data, width, height, bx, by, snap);
       return;
@@ -802,7 +816,10 @@ function embedBitInBlock(
     for (let i = 0; i < 64; i++) d[i] = newLuma[i]! - luma[i]!;
     applyBlockDeltaToRgb(data, width, height, bx, by, d, { targetBit: bit });
 
-    if (readBitFromBlock(data, width, height, bx, by) === bit) {
+    if (
+      readBitFromBlock(data, width, height, bx, by) === bit &&
+      embedSatisfiesMagProtocol(data, width, height, bx, by, bit)
+    ) {
       return;
     }
     scale = Math.min(scale * EMBED_SCALE_GROWTH, EMBED_SCALE_MAX);
@@ -810,32 +827,26 @@ function embedBitInBlock(
 }
 
 /**
- * Decode one bit from **signed** mid-frequency gap `coeff_A − coeff_B` (embed + readBitFromBlock).
- * Extract uses `decodeBitFromMidfreqGapForExtract` on **|A|−|B|** instead (see `EXTRACT_MAG_GAP_THRESHOLD`).
+ * Classify from signed magnitude gap `|A|−|B|` vs `EXTRACT_MAG_GAP_THRESHOLD`;
+ * tie-break uses sign of gap. `invert` matches extract XOR path only.
  */
-function decodeBitFromMidfreqGap(gap: number): number {
-  if (gap > EXTRACT_GAP) return 1;
-  if (gap < -EXTRACT_GAP) return 0;
-  if (gap > 0) return 1;
-  if (gap < 0) return 0;
-  return 0;
+function magGapToBit(magGap: number, invert: boolean): number {
+  let b: number;
+  if (magGap > EXTRACT_MAG_GAP_THRESHOLD) b = 1;
+  else if (magGap < -EXTRACT_MAG_GAP_THRESHOLD) b = 0;
+  else b = magGap >= 0 ? 1 : 0;
+  return invert ? b ^ 1 : b;
 }
 
-function midfreqAbsMagGapFromCoeff(coeff: Float64Array): number {
-  return Math.abs(coeff[COEFF_A]!) - Math.abs(coeff[COEFF_B]!);
-}
-
-/** Extract-only: `|dct(3,1)| − |dct(1,3)|` vs threshold; optional XOR vs channel. */
+/** Extract path: same rule as `readBitFromBlock`, optional `EXTRACT_INVERT_DCT_GAP_DECODER`. */
 function decodeBitFromMidfreqGapForExtract(coeff: Float64Array): number {
-  const magGap = midfreqAbsMagGapFromCoeff(coeff);
-  const b = magGap > EXTRACT_MAG_GAP_THRESHOLD ? 1 : 0;
-  return EXTRACT_INVERT_DCT_GAP_DECODER ? b ^ 1 : b;
+  return magGapToBit(
+    midfreqAbsMagGapFromCoeff(coeff),
+    EXTRACT_INVERT_DCT_GAP_DECODER
+  );
 }
 
-/**
- * Protocol (embed/verify): bit 1 iff (A−B) > EXTRACT_GAP; bit 0 iff (A−B) < −EXTRACT_GAP;
- * ambiguous band uses sign of signed gap.
- */
+/** Embed/verify: Steel magnitude protocol (no extract-only invert). */
 function readBitFromBlock(
   data: Buffer,
   width: number,
@@ -844,8 +855,7 @@ function readBitFromBlock(
   by: number
 ): number {
   const coeff = dct8x8(readLumaBlock(data, width, height, bx, by));
-  const gap = coeff[COEFF_A]! - coeff[COEFF_B]!;
-  return decodeBitFromMidfreqGap(gap);
+  return magGapToBit(midfreqAbsMagGapFromCoeff(coeff), false);
 }
 
 /**
@@ -1115,22 +1125,22 @@ function majority(votes: number[]): number {
   return s * 2 >= votes.length ? 1 : 0;
 }
 
-/** Each logical payload bit → `TRIPLE_REDUNDANCY` identical physical bits (cyclic in blocks). */
+/** Each logical payload bit → `PHYSICAL_REDUNDANCY` identical physical bits (cyclic in blocks). */
 function tripleExpandPayloadBits(bits: number[]): number[] {
   const out: number[] = [];
   for (let i = 0; i < bits.length; i++) {
     const b = bits[i]! & 1;
-    for (let t = 0; t < TRIPLE_REDUNDANCY; t++) out.push(b);
+    for (let t = 0; t < PHYSICAL_REDUNDANCY; t++) out.push(b);
   }
   return out;
 }
 
-/** Invert triple-expand: one logical bit per `TRIPLE_REDUNDANCY` physical slots. */
+/** Invert expand: one logical bit per `PHYSICAL_REDUNDANCY` physical slots (embed majority). */
 function collapseTriplePhysicalBits(physical: number[]): number[] | null {
-  if (physical.length % TRIPLE_REDUNDANCY !== 0) return null;
+  if (physical.length % PHYSICAL_REDUNDANCY !== 0) return null;
   const out: number[] = [];
-  for (let i = 0; i < physical.length; i += TRIPLE_REDUNDANCY) {
-    const chunk = physical.slice(i, i + TRIPLE_REDUNDANCY);
+  for (let i = 0; i < physical.length; i += PHYSICAL_REDUNDANCY) {
+    const chunk = physical.slice(i, i + PHYSICAL_REDUNDANCY);
     out.push(majority(chunk));
   }
   return out;
@@ -1140,20 +1150,20 @@ function logicalBitFromTripleVotesExtract(votes: number[]): number {
   if (!EXTRACT_TRIPLE_REQUIRE_UNANIMOUS_FOR_ONE) {
     return majority(votes);
   }
-  const b0 = votes[0]! & 1;
-  const b1 = votes[1]! & 1;
-  const b2 = votes[2]! & 1;
-  return b0 & b1 & b2;
+  for (const v of votes) {
+    if ((v & 1) === 0) return 0;
+  }
+  return 1;
 }
 
-/** Extract path: conservative triple voting (see `EXTRACT_TRIPLE_REQUIRE_UNANIMOUS_FOR_ONE`). */
+/** Extract path: unanimous vs majority (see `EXTRACT_TRIPLE_REQUIRE_UNANIMOUS_FOR_ONE`). */
 function collapseTriplePhysicalBitsForExtract(
   physical: number[]
 ): number[] | null {
-  if (physical.length % TRIPLE_REDUNDANCY !== 0) return null;
+  if (physical.length % PHYSICAL_REDUNDANCY !== 0) return null;
   const out: number[] = [];
-  for (let i = 0; i < physical.length; i += TRIPLE_REDUNDANCY) {
-    const chunk = physical.slice(i, i + TRIPLE_REDUNDANCY);
+  for (let i = 0; i < physical.length; i += PHYSICAL_REDUNDANCY) {
+    const chunk = physical.slice(i, i + PHYSICAL_REDUNDANCY);
     out.push(logicalBitFromTripleVotesExtract(chunk));
   }
   return out;
@@ -1365,7 +1375,7 @@ export function embedMemberIdDct(image: BitmapLike, userId: string): void {
 
   if (count < Lphy) {
     throw new Error(
-      `Image too small for cyclic DCT watermark: need at least ${Lphy} interior 8×8 blocks (triple stream), have ${count} (${bw}×${bh} interior; full ${fullBw}×${fullBh})`
+      `Image too small for cyclic DCT watermark: need at least ${Lphy} interior 8×8 blocks (9× redundant stream), have ${count} (${bw}×${bh} interior; full ${fullBw}×${fullBh})`
     );
   }
 
@@ -1857,7 +1867,9 @@ void (function assertBigEndianBitsRoundTrip(): void {
   const expanded = tripleExpandPayloadBits(bits);
   const collapsed = collapseTriplePhysicalBits(expanded);
   if (!collapsed || collapsed.length !== bits.length || collapsed.join("") !== bits.join("")) {
-    throw new Error("Creator Guard DCT: triple expand/collapse must preserve logical bits");
+    throw new Error(
+      "Creator Guard DCT: physical redundancy expand/collapse must preserve logical bits"
+    );
   }
   for (let v = 0; v < 256; v++) {
     const b = payloadBufferToBigEndianBits(Buffer.from([v]));
