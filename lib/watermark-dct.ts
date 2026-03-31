@@ -97,7 +97,7 @@ const EXTRACT_INVERT_DCT_GAP_DECODER = false;
 const MAGIC_BRUTE_FORCE_MAX_START_BIT = 128;
 
 /** Max Hamming distance vs `WATERMARK_MAGIC_V3` first 32 bits to accept a magic window. */
-const MAGIC_HAMMING_MAX_ERRORS = 20;
+const MAGIC_HAMMING_MAX_ERRORS = 22;
 
 function hammingWithinMagicTolerance(err: number): boolean {
   return err <= MAGIC_HAMMING_MAX_ERRORS;
@@ -380,6 +380,10 @@ export type WatermarkExtractDebugSnapshot = {
   bestFromInvertedStream: boolean;
   /** Set when brute-force aligned magic but `magic_missing` (or utf8 path below). */
   forceExtract?: WatermarkExtractForceExtractDebug;
+  /**
+   * Blind UTF-8 after magic (10B + 16B windows), printable-stripped previews — even when no accept.
+   */
+  blindCleanedPreview?: string;
 };
 
 export type WatermarkExtractResult =
@@ -1205,7 +1209,8 @@ function tryEmergencyFixedMemberLenExtract(
 const BLIND_AFTER_MAGIC_BIT_WINDOWS = [80, 128] as const;
 /** Payload `len` so collapsed stream covers magic + 128 bits blind window. */
 const BLIND_PHYSICAL_SURROGATE_USER_LEN = 16;
-const BLIND_KEYWORD_RE = /Member|Creator/i;
+const BLIND_MIN_CLEANED_LEN = 5;
+const BLIND_MIN_LETTER_OR_DIGIT = 3;
 
 function blindExtractStripNonPrintable(s: string): string {
   let out = "";
@@ -1222,38 +1227,58 @@ function blindExtractStripNonPrintable(s: string): string {
   return out;
 }
 
+function countLettersOrDigits(s: string): number {
+  let n = 0;
+  for (const ch of s) {
+    if (/[\p{L}\p{N}]/u.test(ch)) n++;
+  }
+  return n;
+}
+
+type BlindExtractOutcome = {
+  userId: string | null;
+  /** Joined previews from 10B + 16B windows (printable-stripped), for `debugSnapshot`. */
+  blindCleanedPreview: string;
+};
+
 /**
- * After fuzzy magic alignment: read raw UTF-8 from collapsed bits **after** the magic (skip uint16).
- * Returns a userId if **Member** or **Creator** appears in decoded text (post-filter).
+ * After fuzzy magic alignment: raw UTF-8 from collapsed bits immediately after the 32-bit magic.
+ * Accept if trimmed `cleaned` length ≥ 5 **or** ≥ 3 letters/digits (Unicode) in `cleaned`.
  */
 function tryBlindExtractAfterMagicMarker(
   blockBits: number[],
   count: number,
   magicSkipBits: number,
   streamInvertCollapsed: boolean
-): string | null {
+): BlindExtractOutcome {
+  const empty = (): BlindExtractOutcome => ({
+    userId: null,
+    blindCleanedPreview: "",
+  });
+
   const len = BLIND_PHYSICAL_SURROGATE_USER_LEN;
   const needCollapsedLogical = magicSkipBits + 32 + 128;
   if (
     collapsedLogicalBitCountForLen(len, magicSkipBits) < needCollapsedLogical
   ) {
-    return null;
+    return empty();
   }
   const Lphy = physicalStreamBitLengthForLen(len, magicSkipBits);
-  if (count < Lphy) return null;
+  if (count < Lphy) return empty();
   const allBits = reconstructBigEndianBitsFromBlocks(blockBits, count, Lphy);
-  if (!allBits || allBits.length !== Lphy) return null;
+  if (!allBits || allBits.length !== Lphy) return empty();
   const collapsedRaw = collapseTriplePhysicalBitsForExtract(allBits);
   const needCollapsed = collapsedLogicalBitCountForLen(len, magicSkipBits);
-  if (!collapsedRaw || collapsedRaw.length !== needCollapsed) return null;
+  if (!collapsedRaw || collapsedRaw.length !== needCollapsed) return empty();
   const collapsed = applyCollapsedStreamInvert(
     collapsedRaw,
     streamInvertCollapsed
   );
   const startBit = magicSkipBits + 32;
-  if (collapsed.length < startBit + 128) return null;
+  if (collapsed.length < startBit + 128) return empty();
 
   const decoder = new TextDecoder("utf-8", { fatal: false });
+  const previewParts: string[] = [];
 
   for (const winBits of BLIND_AFTER_MAGIC_BIT_WINDOWS) {
     const slice = collapsed.slice(startBit, startBit + winBits);
@@ -1263,22 +1288,38 @@ function tryBlindExtractAfterMagicMarker(
     if (!buf) continue;
     const raw = decoder.decode(buf);
     const cleaned = blindExtractStripNonPrintable(raw);
+    const prevSnippet = cleaned.slice(0, 96);
+    previewParts.push(`${winBits}b:${prevSnippet}`);
     console.log("[Creator Guard DCT] blind extract probe", {
       winBits,
       rawPreview: raw.slice(0, 48),
       cleanedPreview: cleaned.slice(0, 48),
     });
-    if (BLIND_KEYWORD_RE.test(cleaned) || BLIND_KEYWORD_RE.test(raw)) {
-      const userId =
-        cleaned.trim().length > 0 ? cleaned.trim() : raw.trim();
-      console.log("[Creator Guard DCT] blind extract keyword HIT", {
+    const trimmed = cleaned.trim();
+    const alnumish = countLettersOrDigits(cleaned);
+    const longEnough = trimmed.length >= BLIND_MIN_CLEANED_LEN;
+    const alnumOk = alnumish >= BLIND_MIN_LETTER_OR_DIGIT;
+    if (longEnough || alnumOk) {
+      const userId = trimmed.length > 0 ? trimmed : raw.trim();
+      if (userId.length === 0) continue;
+      console.log("[Creator Guard DCT] blind extract ACCEPT", {
         winBits,
+        reason: longEnough ? "cleaned_len>=5" : "letters_or_digits>=3",
+        trimmedLen: trimmed.length,
+        letterOrDigitCount: alnumish,
         userIdPreview: userId.slice(0, 80),
       });
-      return userId;
+      return {
+        userId,
+        blindCleanedPreview: previewParts.join(" | ").slice(0, 500),
+      };
     }
   }
-  return null;
+
+  return {
+    userId: null,
+    blindCleanedPreview: previewParts.join(" | ").slice(0, 500),
+  };
 }
 
 /**
@@ -1701,15 +1742,17 @@ export function extractMemberIdDctDetailed(
     }
   }
 
+  let blindCleanedPreviewForSnapshot = "";
   if (hadBruteMagicMatch) {
-    const blindUserId = tryBlindExtractAfterMagicMarker(
+    const blind = tryBlindExtractAfterMagicMarker(
       blockBits,
       count,
       magicSkipBits,
       streamInvertCollapsed
     );
-    if (blindUserId != null && blindUserId.length > 0) {
-      return { ok: true, userId: blindUserId };
+    blindCleanedPreviewForSnapshot = blind.blindCleanedPreview;
+    if (blind.userId != null && blind.userId.length > 0) {
+      return { ok: true, userId: blind.userId };
     }
   }
 
@@ -1779,6 +1822,9 @@ export function extractMemberIdDctDetailed(
     bestHamming: magicBruteScanStats.bestHamming,
     bestIndex: magicBruteScanStats.bestIndex,
     bestFromInvertedStream: magicBruteScanStats.bestFromInvertedStream,
+    ...(hadBruteMagicMatch
+      ? { blindCleanedPreview: blindCleanedPreviewForSnapshot }
+      : {}),
     ...(hadBruteMagicMatch && forceExtractProbe
       ? { forceExtract: forceExtractProbe }
       : hadBruteMagicMatch
