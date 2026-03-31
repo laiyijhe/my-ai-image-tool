@@ -93,6 +93,10 @@ const MAGIC_BRUTE_FORCE_MAX_START_BIT = 128;
 /** Max Hamming distance vs `WATERMARK_MAGIC_V3` first 32 bits to accept a magic window. */
 const MAGIC_HAMMING_MAX_ERRORS = 18;
 
+function hammingWithinMagicTolerance(err: number): boolean {
+  return err <= MAGIC_HAMMING_MAX_ERRORS;
+}
+
 /** Hamming distance at `collapsed[start..start+32)` vs `magic32`, optional per-bit invert before compare. */
 function hamming32VsMagic(
   collapsed: number[],
@@ -189,14 +193,24 @@ function bruteForceMagicSkip0To32(
     }
   }
 
+  /**
+   * Any candidate with `err <= MAGIC_HAMMING_MAX_ERRORS` is accepted; pick best by lowest err,
+   * then tie-break (when `gapDecoderInverts`, prefer **no** stream XOR to limit double-invert).
+   */
   function pickAcceptable(
     candidates: MagicSkipCandidate[]
   ): MagicSkipCandidate | null {
-    const ok = candidates.filter((c) => c.err <= MAGIC_HAMMING_MAX_ERRORS);
+    const ok = candidates.filter((c) =>
+      hammingWithinMagicTolerance(Number(c.err))
+    );
     if (ok.length === 0) return null;
+    const preferStreamInvertOnTie = !gapDecoderInverts;
     ok.sort((a, b) => {
       if (a.err !== b.err) return a.err - b.err;
-      if (a.streamInvert !== b.streamInvert) return a.streamInvert ? -1 : 1;
+      if (a.streamInvert !== b.streamInvert) {
+        if (preferStreamInvertOnTie) return a.streamInvert ? -1 : 1;
+        return a.streamInvert ? 1 : -1;
+      }
       if (a.magicByteRev !== b.magicByteRev)
         return a.magicByteRev ? 1 : -1;
       return 0;
@@ -207,38 +221,6 @@ function bruteForceMagicSkip0To32(
   for (let i = 0; i <= MAGIC_BRUTE_FORCE_MAX_START_BIT; i++) {
     if (collapsedBits.length < i + 32) break;
 
-    if (gapDecoderInverts) {
-      const e0 = hamming32VsMagic(collapsedBits, i, magic32Msb, false);
-      const e1 = hamming32VsMagic(collapsedBits, i, magic32Lsb, false);
-      noteGlobalBest(e0, i, false);
-      noteGlobalBest(e1, i, false);
-      const chosen = pickAcceptable([
-        { err: e0, streamInvert: false, magicByteRev: false },
-        { err: e1, streamInvert: false, magicByteRev: true },
-      ]);
-      if (chosen) {
-        console.log(
-          "FOUND MAGIC AT BIT:",
-          i,
-          "ERROR_BITS:",
-          chosen.err,
-          "INVERTED:",
-          chosen.streamInvert,
-          "MAGIC_LSB_FIRST_PER_BYTE:",
-          chosen.magicByteRev
-        );
-        return {
-          match: { offset: i, streamInvert: chosen.streamInvert },
-          scanStats: {
-            bestHamming: globalBestErr,
-            bestIndex: globalBestIndex,
-            bestFromInvertedStream: globalBestFromInvertedStream,
-          },
-        };
-      }
-      continue;
-    }
-
     const e0 = hamming32VsMagic(collapsedBits, i, magic32Msb, false);
     const e1 = hamming32VsMagic(collapsedBits, i, magic32Msb, true);
     const e2 = hamming32VsMagic(collapsedBits, i, magic32Lsb, false);
@@ -247,12 +229,34 @@ function bruteForceMagicSkip0To32(
     noteGlobalBest(e3, i, true);
     noteGlobalBest(e0, i, false);
     noteGlobalBest(e2, i, false);
-    const chosen = pickAcceptable([
+
+    const candidates: MagicSkipCandidate[] = [
       { err: e0, streamInvert: false, magicByteRev: false },
       { err: e1, streamInvert: true, magicByteRev: false },
       { err: e2, streamInvert: false, magicByteRev: true },
       { err: e3, streamInvert: true, magicByteRev: true },
-    ]);
+    ];
+
+    const minErr = Math.min(e0, e1, e2, e3);
+    const chosen = pickAcceptable(candidates);
+
+    if (i === 0 && !chosen && hammingWithinMagicTolerance(minErr)) {
+      console.log(
+        "[Creator Guard] Why was index 0 rejected with",
+        minErr,
+        "errors?",
+        {
+          MAGIC_HAMMING_MAX_ERRORS,
+          e0,
+          e1,
+          e2,
+          e3,
+          gapDecoderInverts,
+          tolerances: [e0, e1, e2, e3].map((e) => hammingWithinMagicTolerance(e)),
+        }
+      );
+    }
+
     if (chosen) {
       console.log(
         "FOUND MAGIC AT BIT:",
