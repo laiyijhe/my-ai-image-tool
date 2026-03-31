@@ -71,10 +71,17 @@ export default function VerifyPage() {
   const [userId, setUserId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [errorDebug, setErrorDebug] = useState<string | null>(null);
-  /** Last /api/verify JSON body (or client error stub) — always shown under the error for bit-shift work. */
+  /** Last /api/verify-v4 JSON body (or client error stub) — always shown under the error for bit-shift work. */
   const [verifyResult, setVerifyResult] = useState<Record<string, unknown> | null>(
     null
   );
+
+  const fileRef = useRef<File | null>(null);
+  const analyzeNativeRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    fileRef.current = file;
+  }, [file]);
 
   const previewUrl = useMemo(() => {
     if (!file) return null;
@@ -112,39 +119,44 @@ export default function VerifyPage() {
           })
         );
 
-        const response = await fetch("/api/verify", {
-          method: "POST",
-          body: formData,
-        });
-
-        const responseStatus = response.status;
-        let data: Record<string, unknown>;
+        alert("SENDING_TO_API_NOW");
         try {
-          data = (await response.json()) as Record<string, unknown>;
-        } catch {
-          data = {
-            clientParseError: true,
-            httpStatus: responseStatus,
-            statusText: response.statusText,
-          };
-        }
-
-        console.log("CLIENT_RECEIVE:", data);
-        alert(JSON.stringify(data));
-        document.body.style.margin = "0";
-        document.body.style.background = "#000000";
-        document.body.innerHTML = "<h1>" + JSON.stringify(data) + "</h1>";
-        const heading = document.body.querySelector("h1");
-        if (heading instanceof HTMLElement) {
-          heading.style.color = "#ffffff";
-          heading.style.textAlign = "center";
-          heading.style.fontSize = "clamp(0.85rem, 3vw, 1.75rem)";
-          heading.style.fontFamily = "ui-monospace, monospace";
-          heading.style.margin = "0";
-          heading.style.padding = "8vh 16px 24px";
-          heading.style.fontWeight = "600";
-          heading.style.lineHeight = "1.4";
-          heading.style.wordBreak = "break-all";
+          const res = await fetch("/api/verify-v4", {
+            method: "POST",
+            body: formData,
+          });
+          const httpStatus = res.status;
+          const rawText = await res.text();
+          let data: Record<string, unknown> | null = null;
+          try {
+            data = JSON.parse(rawText) as Record<string, unknown>;
+          } catch {
+            /* non-JSON body */
+          }
+          if (httpStatus === 422) {
+            alert("HEX_FOUND: " + JSON.stringify(data?.FULL_OFFSETS));
+          }
+          console.log("CLIENT_RECEIVE raw", httpStatus, rawText);
+          alert("RAW_DATA: " + rawText);
+          document.body.style.margin = "0";
+          document.body.style.background = "#000000";
+          const esc = rawText
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;");
+          document.body.innerHTML =
+            '<pre style="color:#fff;white-space:pre-wrap;word-break:break-all;padding:24px;margin:0;font:14px/1.45 ui-monospace,monospace;">' +
+            esc +
+            "</pre>";
+        } catch (fetchErr) {
+          console.error("verify fetch block", fetchErr);
+          alert("FETCH_CATCH: " + String(fetchErr));
+          document.body.style.margin = "0";
+          document.body.style.background = "#3f0000";
+          document.body.innerHTML =
+            "<pre style=\"color:#fecaca;padding:24px;margin:0\">" +
+            String(fetchErr).replace(/&/g, "&amp;").replace(/</g, "&lt;") +
+            "</pre>";
         }
         return;
       } catch {
@@ -160,6 +172,22 @@ export default function VerifyPage() {
     },
     [t]
   );
+
+  useEffect(() => {
+    const btn = analyzeNativeRef.current;
+    if (!btn) return;
+    const onNativeClick = () => {
+      alert("NATIVE_DOM_ANALYZE_CLICK");
+      const f = fileRef.current;
+      if (!f) {
+        alert("NO_FILE_PICKED");
+        return;
+      }
+      void handleVerify(f);
+    };
+    btn.addEventListener("click", onNativeClick);
+    return () => btn.removeEventListener("click", onNativeClick);
+  }, [handleVerify]);
 
   const onDrop = useCallback(
     (e: React.DragEvent) => {
@@ -268,14 +296,20 @@ export default function VerifyPage() {
           ) : null}
         </button>
 
-        <button
-          type="button"
-          disabled={!file || loading}
-          onClick={() => file && void handleVerify(file)}
-          className="mt-5 flex h-12 w-full items-center justify-center rounded-2xl bg-gradient-to-r from-cyan-400 to-teal-500 text-sm font-semibold text-slate-950 shadow-lg shadow-cyan-900/20 transition hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-40"
-        >
-          {loading ? t.verifyAnalyzing : t.verifyButton}
-        </button>
+        {/* Native DOM listener only — no React onClick (wire-up test). */}
+        <div className="mt-5 flex w-full items-center gap-3">
+          <button
+            ref={analyzeNativeRef}
+            id="ID_VERIFY_V4_FINAL"
+            type="button"
+            className="flex h-12 min-w-0 flex-1 items-center justify-center rounded-2xl bg-gradient-to-r from-cyan-400 to-teal-500 text-sm font-semibold text-slate-950 shadow-lg shadow-cyan-900/20 transition hover:brightness-105"
+          >
+            {loading ? t.verifyAnalyzing : t.verifyButton}
+          </button>
+          <p className="shrink-0 text-xs font-mono tabular-nums text-slate-400">
+            VER: 4.0.0
+          </p>
+        </div>
 
         {error !== null ? (
           <div className="mt-6 rounded-2xl border border-amber-500/25 bg-amber-950/30 px-4 py-4 text-center text-sm text-amber-200/90">
