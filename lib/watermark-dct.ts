@@ -38,7 +38,10 @@ export const WATERMARK_MAGIC_V3 = Buffer.from([0x43, 0x47, 0x57, 0x03]);
 
 const MAX_USER_ID_BYTES = 256;
 
-/** Row-major u*8+v — index 25 = (3,1), index 11 = (1,3). No other ACs participate. */
+/**
+ * Mid-frequency AC pair (typical DCT watermark band): (u,v) = (3,1) vs (1,3).
+ * Row-major u*8+v — index 25 = (3,1), index 11 = (1,3). No other ACs participate.
+ */
 const COEFF_A = 3 * 8 + 1; // 25
 const COEFF_B = 1 * 8 + 3; // 11
 
@@ -53,7 +56,11 @@ const EMBED_SCALE_GROWTH = 1.12;
  * Extract: read threshold (unchanged).
  */
 const EMBED_GAP = 60;
-const EXTRACT_GAP = 5;
+/**
+ * Decode hysteresis on (coeff_A − coeff_B). Outside ±this band we use hard 0/1; inside (after PNG
+ * etc.) we still use the **sign** of the gap so attenuated marks do not collapse to all-zero bits.
+ */
+const EXTRACT_GAP = 2;
 const GAP_ENFORCE_MAX_STEPS = 192;
 
 /** Same logical payload bit is written to 3 consecutive physical stream slots (then cyclic). */
@@ -488,9 +495,20 @@ function embedBitInBlock(
   }
 }
 
+/** Decode one bit from mid-frequency DCT gap (coeff (3,1) minus (1,3)). */
+function decodeBitFromMidfreqGap(gap: number): number {
+  if (gap > EXTRACT_GAP) return 1;
+  if (gap < -EXTRACT_GAP) return 0;
+  if (gap > 0) return 1;
+  if (gap < 0) return 0;
+  return 0;
+}
+
 /**
- * Protocol: bit 1 iff (A−B) > EXTRACT_GAP; bit 0 iff (A−B) < −EXTRACT_GAP; else 0 (ambiguous/tie).
- * Pairs with EMBED_GAP on the write path.
+ * Protocol: bit 1 iff (A−B) > EXTRACT_GAP; bit 0 iff (A−B) < −EXTRACT_GAP.
+ * In the ambiguous band |gap| ≤ EXTRACT_GAP (common after lossy recompression), decode by **sign**
+ * of gap — embed pushes A>B for 1 and A<B for 0, so residual direction still carries information.
+ * Exact tie (gap===0) → 0.
  */
 function readBitFromBlock(
   data: Buffer,
@@ -501,9 +519,7 @@ function readBitFromBlock(
 ): number {
   const coeff = dct8x8(readLumaBlock(data, width, height, bx, by));
   const gap = coeff[COEFF_A]! - coeff[COEFF_B]!;
-  if (gap > EXTRACT_GAP) return 1;
-  if (gap < -EXTRACT_GAP) return 0;
-  return 0;
+  return decodeBitFromMidfreqGap(gap);
 }
 
 /**
@@ -972,9 +988,43 @@ export function extractMemberIdDctDetailed(
   logFirstInteriorBlockDctCoefficients("extract", data, width, height);
 
   const blockBits: number[] = new Array(count);
+  const gapsFirst32: number[] = [];
+  const coeffA_first8: number[] = [];
+  const coeffB_first8: number[] = [];
   for (let k = 0; k < count; k++) {
     const { bx, by } = blockIndexToCoords(k, bw);
-    blockBits[k] = readBitFromBlock(data, width, height, bx, by);
+    const coeff = dct8x8(readLumaBlock(data, width, height, bx, by));
+    const a = coeff[COEFF_A]!;
+    const b = coeff[COEFF_B]!;
+    const gap = a - b;
+    if (k < 32) gapsFirst32.push(gap);
+    if (k < 8) {
+      coeffA_first8.push(a);
+      coeffB_first8.push(b);
+    }
+    blockBits[k] = decodeBitFromMidfreqGap(gap);
+  }
+
+  if (gapsFirst32.length > 0) {
+    const maxAbs = gapsFirst32.reduce((m, g) => Math.max(m, Math.abs(g)), 0);
+    const inAmbiguousBand = gapsFirst32.filter(
+      (g) => Math.abs(g) <= EXTRACT_GAP
+    ).length;
+    if (maxAbs <= EXTRACT_GAP * 2 || inAmbiguousBand >= gapsFirst32.length * 0.75) {
+      console.warn("[Creator Guard DCT] extract_midfreq_gap_weak_signal", {
+        EXTRACT_GAP,
+        COEFF_A,
+        COEFF_B,
+        gapsFirst32_min: Math.min(...gapsFirst32),
+        gapsFirst32_max: Math.max(...gapsFirst32),
+        gapsFirst32_maxAbs: maxAbs,
+        ambiguousBandCount_first32: inAmbiguousBand,
+        coeffA_first8,
+        coeffB_first8,
+        note:
+          "Raw DCT (3,1) vs (1,3); |gap| small → was collapsing to all 0; now sign-based in band",
+      });
+    }
   }
 
   const coeffI = dct8x8(readLumaBlock(data, width, height, 1, 1));
