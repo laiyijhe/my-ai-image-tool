@@ -67,7 +67,13 @@ const GAP_ENFORCE_MAX_STEPS = 192;
  * Extract-only: compare **magnitudes** |coeff(3,1)| vs |coeff(1,3)| (flat indices `COEFF_A` / `COEFF_B`).
  * Bit 1 iff `|A| − |B| > threshold` — less sensitive than signed `A−B` when noise biases weak positives.
  */
-const EXTRACT_MAG_GAP_THRESHOLD = 1.5;
+const EXTRACT_MAG_GAP_THRESHOLD = 2.5;
+
+/**
+ * Extract-only: logical **1** only if all `TRIPLE_REDUNDANCY` physical reads are 1 (drops scattered
+ * noise 1s). Any 0 in the triplet → logical 0.
+ */
+const EXTRACT_TRIPLE_REQUIRE_UNANIMOUS_FOR_ONE = true;
 
 /** Same logical payload bit is written to 3 consecutive physical stream slots (then cyclic). */
 const TRIPLE_REDUNDANCY = 3;
@@ -1126,6 +1132,75 @@ function collapseTriplePhysicalBits(physical: number[]): number[] | null {
   return out;
 }
 
+function logicalBitFromTripleVotesExtract(votes: number[]): number {
+  if (!EXTRACT_TRIPLE_REQUIRE_UNANIMOUS_FOR_ONE) {
+    return majority(votes);
+  }
+  const b0 = votes[0]! & 1;
+  const b1 = votes[1]! & 1;
+  const b2 = votes[2]! & 1;
+  return b0 & b1 & b2;
+}
+
+/** Extract path: conservative triple voting (see `EXTRACT_TRIPLE_REQUIRE_UNANIMOUS_FOR_ONE`). */
+function collapseTriplePhysicalBitsForExtract(
+  physical: number[]
+): number[] | null {
+  if (physical.length % TRIPLE_REDUNDANCY !== 0) return null;
+  const out: number[] = [];
+  for (let i = 0; i < physical.length; i += TRIPLE_REDUNDANCY) {
+    const chunk = physical.slice(i, i + TRIPLE_REDUNDANCY);
+    out.push(logicalBitFromTripleVotesExtract(chunk));
+  }
+  return out;
+}
+
+const EMERGENCY_SUSPICIOUS_DECLARED_LEN = 100;
+const EMERGENCY_FIXED_USER_ID_LENS = [12, 16] as const;
+
+function tryEmergencyFixedMemberLenExtract(
+  blockBits: number[],
+  count: number,
+  magicSkipBits: number,
+  streamInvertCollapsed: boolean,
+  fixedUserIdLen: 12 | 16
+): string | null {
+  const len = fixedUserIdLen;
+  const Lphy = physicalStreamBitLengthForLen(len, magicSkipBits);
+  if (count < Lphy) return null;
+  const allBits = reconstructBigEndianBitsFromBlocks(blockBits, count, Lphy);
+  if (!allBits || allBits.length !== Lphy) return null;
+  const collapsedRaw = collapseTriplePhysicalBitsForExtract(allBits);
+  const needCollapsed = collapsedLogicalBitCountForLen(len, magicSkipBits);
+  if (!collapsedRaw || collapsedRaw.length !== needCollapsed) return null;
+  const collapsed = applyCollapsedStreamInvert(
+    collapsedRaw,
+    streamInvertCollapsed
+  );
+  const payloadBits = sliceCollapsedPayloadBits(
+    collapsed,
+    6 + len,
+    magicSkipBits
+  );
+  if (!payloadBits || payloadBits.length !== (6 + len) * 8) return null;
+  const buf = bigEndianBitsToBuffer(payloadBits, 6 + len);
+  if (!buf || buf.length < 6 + len) return null;
+  if (
+    buf[0] !== 0x43 ||
+    buf[1] !== 0x47 ||
+    buf[2] !== 0x57 ||
+    buf[3] !== 0x03
+  ) {
+    return null;
+  }
+  const raw = buf.subarray(6, 6 + len);
+  try {
+    return new TextDecoder("utf-8", { fatal: false }).decode(raw);
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Reconstruct **physical** stream: index `j` = MSB-first, majority over blocks `j, j+L, j+2L, …`.
  * (Tail indices may have only one vote when `B` is small — triple redundancy is in **consecutive**
@@ -1228,7 +1303,9 @@ export function extractMemberIdDctDetailed(
         Lphy1
       );
       if (auditPhysicalLen1) {
-        auditCollapsedLen1 = collapseTriplePhysicalBits(auditPhysicalLen1);
+        auditCollapsedLen1 = collapseTriplePhysicalBitsForExtract(
+          auditPhysicalLen1
+        );
       }
     }
     if (count >= Lphy10) {
@@ -1238,7 +1315,7 @@ export function extractMemberIdDctDetailed(
         Lphy10
       );
       if (p10) {
-        auditCollapsedLen10 = collapseTriplePhysicalBits(p10);
+        auditCollapsedLen10 = collapseTriplePhysicalBitsForExtract(p10);
       }
     }
     return {
@@ -1281,6 +1358,7 @@ export function extractMemberIdDctDetailed(
   }
 
   let forceExtractProbe: WatermarkExtractForceExtractDebug | null = null;
+  let maxDeclaredUint16Seen = 0;
 
   const minInteriorBlocks = magicSkipBits + 32;
 
@@ -1361,7 +1439,7 @@ export function extractMemberIdDctDetailed(
       continue;
     }
 
-    const collapsedRaw = collapseTriplePhysicalBits(allBits);
+    const collapsedRaw = collapseTriplePhysicalBitsForExtract(allBits);
     const needCollapsed = collapsedLogicalBitCountForLen(len, magicSkipBits);
     if (!collapsedRaw || collapsedRaw.length !== needCollapsed) {
       if (hadBruteMagicMatch) {
@@ -1433,6 +1511,11 @@ export function extractMemberIdDctDetailed(
         console.log("[Creator Guard DCT] extract skip: buffer pack", { len });
       }
       continue;
+    }
+
+    const packedDeclLen = buf.readUInt16BE(4);
+    if (packedDeclLen > maxDeclaredUint16Seen) {
+      maxDeclaredUint16Seen = packedDeclLen;
     }
 
     const rawLengthHex = buf.subarray(4, 6).toString("hex");
@@ -1535,6 +1618,34 @@ export function extractMemberIdDctDetailed(
             }
           : undefined,
       };
+    }
+  }
+
+  if (
+    hadBruteMagicMatch &&
+    maxDeclaredUint16Seen > EMERGENCY_SUSPICIOUS_DECLARED_LEN
+  ) {
+    console.warn(
+      "[Creator Guard DCT] emergency extract: suspicious declared uint16BE",
+      maxDeclaredUint16Seen,
+      "trying fixed member lengths",
+      EMERGENCY_FIXED_USER_ID_LENS
+    );
+    for (const fixedLen of EMERGENCY_FIXED_USER_ID_LENS) {
+      const rescued = tryEmergencyFixedMemberLenExtract(
+        blockBits,
+        count,
+        magicSkipBits,
+        streamInvertCollapsed,
+        fixedLen
+      );
+      if (rescued != null && rescued.length > 0) {
+        console.log("[Creator Guard DCT] emergency rescue ok", {
+          fixedLen,
+          preview: rescued.slice(0, 32),
+        });
+        return { ok: true, userId: rescued };
+      }
     }
   }
 
