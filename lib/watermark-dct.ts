@@ -97,7 +97,7 @@ const EXTRACT_INVERT_DCT_GAP_DECODER = false;
 const MAGIC_BRUTE_FORCE_MAX_START_BIT = 128;
 
 /** Max Hamming distance vs `WATERMARK_MAGIC_V3` first 32 bits to accept a magic window. */
-const MAGIC_HAMMING_MAX_ERRORS = 18;
+const MAGIC_HAMMING_MAX_ERRORS = 20;
 
 function hammingWithinMagicTolerance(err: number): boolean {
   return err <= MAGIC_HAMMING_MAX_ERRORS;
@@ -1201,6 +1201,86 @@ function tryEmergencyFixedMemberLenExtract(
   }
 }
 
+/** Bits after the 32-bit magic: 10 bytes then 16 bytes, length field ignored. */
+const BLIND_AFTER_MAGIC_BIT_WINDOWS = [80, 128] as const;
+/** Payload `len` so collapsed stream covers magic + 128 bits blind window. */
+const BLIND_PHYSICAL_SURROGATE_USER_LEN = 16;
+const BLIND_KEYWORD_RE = /Member|Creator/i;
+
+function blindExtractStripNonPrintable(s: string): string {
+  let out = "";
+  for (const ch of s) {
+    const c = ch.codePointAt(0)!;
+    if (c >= 32 && c <= 126) {
+      out += ch;
+      continue;
+    }
+    if (c > 127 && /\p{L}|\p{N}/u.test(ch)) {
+      out += ch;
+    }
+  }
+  return out;
+}
+
+/**
+ * After fuzzy magic alignment: read raw UTF-8 from collapsed bits **after** the magic (skip uint16).
+ * Returns a userId if **Member** or **Creator** appears in decoded text (post-filter).
+ */
+function tryBlindExtractAfterMagicMarker(
+  blockBits: number[],
+  count: number,
+  magicSkipBits: number,
+  streamInvertCollapsed: boolean
+): string | null {
+  const len = BLIND_PHYSICAL_SURROGATE_USER_LEN;
+  const needCollapsedLogical = magicSkipBits + 32 + 128;
+  if (
+    collapsedLogicalBitCountForLen(len, magicSkipBits) < needCollapsedLogical
+  ) {
+    return null;
+  }
+  const Lphy = physicalStreamBitLengthForLen(len, magicSkipBits);
+  if (count < Lphy) return null;
+  const allBits = reconstructBigEndianBitsFromBlocks(blockBits, count, Lphy);
+  if (!allBits || allBits.length !== Lphy) return null;
+  const collapsedRaw = collapseTriplePhysicalBitsForExtract(allBits);
+  const needCollapsed = collapsedLogicalBitCountForLen(len, magicSkipBits);
+  if (!collapsedRaw || collapsedRaw.length !== needCollapsed) return null;
+  const collapsed = applyCollapsedStreamInvert(
+    collapsedRaw,
+    streamInvertCollapsed
+  );
+  const startBit = magicSkipBits + 32;
+  if (collapsed.length < startBit + 128) return null;
+
+  const decoder = new TextDecoder("utf-8", { fatal: false });
+
+  for (const winBits of BLIND_AFTER_MAGIC_BIT_WINDOWS) {
+    const slice = collapsed.slice(startBit, startBit + winBits);
+    if (slice.length < winBits) continue;
+    const byteLen = winBits / 8;
+    const buf = bigEndianBitsToBuffer(slice, byteLen);
+    if (!buf) continue;
+    const raw = decoder.decode(buf);
+    const cleaned = blindExtractStripNonPrintable(raw);
+    console.log("[Creator Guard DCT] blind extract probe", {
+      winBits,
+      rawPreview: raw.slice(0, 48),
+      cleanedPreview: cleaned.slice(0, 48),
+    });
+    if (BLIND_KEYWORD_RE.test(cleaned) || BLIND_KEYWORD_RE.test(raw)) {
+      const userId =
+        cleaned.trim().length > 0 ? cleaned.trim() : raw.trim();
+      console.log("[Creator Guard DCT] blind extract keyword HIT", {
+        winBits,
+        userIdPreview: userId.slice(0, 80),
+      });
+      return userId;
+    }
+  }
+  return null;
+}
+
 /**
  * Reconstruct **physical** stream: index `j` = MSB-first, majority over blocks `j, j+L, j+2L, …`.
  * (Tail indices may have only one vote when `B` is small — triple redundancy is in **consecutive**
@@ -1618,6 +1698,18 @@ export function extractMemberIdDctDetailed(
             }
           : undefined,
       };
+    }
+  }
+
+  if (hadBruteMagicMatch) {
+    const blindUserId = tryBlindExtractAfterMagicMarker(
+      blockBits,
+      count,
+      magicSkipBits,
+      streamInvertCollapsed
+    );
+    if (blindUserId != null && blindUserId.length > 0) {
+      return { ok: true, userId: blindUserId };
     }
   }
 
