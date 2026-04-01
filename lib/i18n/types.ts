@@ -75,6 +75,25 @@ export type Messages = {
   massLinksReady: string;
   massDownloadCsvAll: string;
   massCsvHeaderImage: string;
+  /** One-shot upload → direct PNG download (POST /api/protect) */
+  quickTestTitle: string;
+  quickTestHint: string;
+  quickTestImageButton: string;
+  quickTestImageChosen: string;
+  quickTestMemberLabel: string;
+  quickTestMemberPlaceholder: string;
+  quickTestGenerate: string;
+  quickTestNeedImage: string;
+  quickTestNeedMember: string;
+  quickTestFailed: string;
+  quickTestWorking: string;
+  /** Apple-style dashboard tabs + toasts */
+  tabQuickShield: string;
+  tabMassDelivery: string;
+  quickProtectDownload: string;
+  toastCapacityHint: string;
+  toastProtectReady: string;
+  toastDismissAria: string;
   /** Leak verification */
   verifyToolLink: string;
   verifyPageTitle: string;

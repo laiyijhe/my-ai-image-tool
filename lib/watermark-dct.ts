@@ -32,9 +32,22 @@ export interface WatermarkVerifyExtractDebug {
 
 /**
  * Creator Guard — DCT v3 (production)
- * Cyclic 8×8 blocks, integer BT.601 luma, Steel DCT (1,2) vs (2,1), 9× redundancy, magnitude gap decode.
+ * Cyclic 8×8 blocks, integer BT.601 luma, Steel DCT (1,2) vs (2,1), 5× redundancy, magnitude gap decode.
  */
 export const WATERMARK_MAGIC_V3 = Buffer.from([0x43, 0x47, 0x57, 0x03]);
+
+/** Interior block grid too small for the physical bit stream (payload length × Steel redundancy). */
+export class WatermarkEmbedCapacityError extends Error {
+  readonly code = "capacity" as const;
+  constructor(
+    message: string,
+    public readonly blocksNeeded: number,
+    public readonly blocksHave: number
+  ) {
+    super(message);
+    this.name = "WatermarkEmbedCapacityError";
+  }
+}
 
 const MAX_USER_ID_BYTES = 256;
 
@@ -70,7 +83,7 @@ const EXTRACT_MAG_GAP_THRESHOLD = 5;
 const EXTRACT_TRIPLE_REQUIRE_UNANIMOUS_FOR_ONE = true;
 
 /** One logical payload bit → `PHYSICAL_REDUNDANCY` identical physical slots (cyclic across blocks). */
-const PHYSICAL_REDUNDANCY = 9;
+const PHYSICAL_REDUNDANCY = 5;
 
 /**
  * Fallback collapsed-skip if brute-force scan (start indices 0..`MAGIC_BRUTE_FORCE_MAX_START_BIT`)
@@ -1392,8 +1405,10 @@ export function embedMemberIdDct(image: BitmapLike, userId: string): void {
   const { bw, bh, count, fullBw, fullBh } = blockGridDims(width, height);
 
   if (count < Lphy) {
-    throw new Error(
-      `Image too small for cyclic DCT watermark: need at least ${Lphy} interior 8×8 blocks (9× redundant stream), have ${count} (${bw}×${bh} interior; full ${fullBw}×${fullBh})`
+    throw new WatermarkEmbedCapacityError(
+      `Image too small for cyclic DCT watermark: need at least ${Lphy} interior 8×8 blocks (Steel ${PHYSICAL_REDUNDANCY}× stream), have ${count} (${bw}×${bh} interior; full ${fullBw}×${fullBh})`,
+      Lphy,
+      count
     );
   }
 

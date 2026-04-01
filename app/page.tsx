@@ -182,6 +182,59 @@ function CheckIcon({ className }: { className?: string }) {
   );
 }
 
+/** Minimal dark glass panel — Apple-like weight. */
+const GLASS_PANEL =
+  "rounded-[1.75rem] border border-white/[0.06] bg-white/[0.035] shadow-[0_12px_48px_rgba(0,0,0,0.5)] backdrop-blur-2xl";
+
+type ToastPayload = {
+  message: string;
+  hint?: string;
+  variant: "error" | "success";
+};
+
+function ToastBanner({
+  toast,
+  onDismiss,
+  dismissLabel,
+}: {
+  toast: ToastPayload;
+  onDismiss: () => void;
+  dismissLabel: string;
+}) {
+  const isErr = toast.variant === "error";
+  return (
+    <div
+      className="pointer-events-auto fixed bottom-6 left-1/2 z-[100] w-[min(100%-2rem,26rem)] -translate-x-1/2"
+      role="alert"
+    >
+      <div
+        className={`rounded-2xl border px-4 py-3.5 shadow-2xl backdrop-blur-xl ${
+          isErr
+            ? "border-red-500/25 bg-red-950/85 text-red-50"
+            : "border-emerald-500/25 bg-emerald-950/85 text-emerald-50"
+        }`}
+      >
+        <div className="flex gap-3">
+          <p className="min-w-0 flex-1 text-sm font-medium leading-snug">
+            {toast.message}
+          </p>
+          <button
+            type="button"
+            onClick={onDismiss}
+            aria-label={dismissLabel}
+            className="shrink-0 rounded-lg px-2 py-0.5 text-xs font-semibold opacity-70 transition hover:opacity-100"
+          >
+            ✕
+          </button>
+        </div>
+        {toast.hint ? (
+          <p className="mt-2 text-xs leading-relaxed opacity-85">{toast.hint}</p>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
 export default function Home() {
   const { t } = useLanguage();
   const origin = useClientOrigin();
@@ -196,14 +249,23 @@ export default function Home() {
     "idle" | "uploading" | "done" | "error"
   >("idle");
   const [massProgress, setMassProgress] = useState({ done: 0, total: 0 });
-  const [massError, setMassError] = useState<string | null>(null);
   const [copiedPath, setCopiedPath] = useState<string | null>(null);
   const [copyPopPath, setCopyPopPath] = useState<string | null>(null);
   const [dragOver, setDragOver] = useState(false);
   const [massDragOver, setMassDragOver] = useState(false);
   const [uploadLabel, setUploadLabel] = useState<string | null>(null);
-  const [needMembers, setNeedMembers] = useState(false);
-  const [needMassImages, setNeedMassImages] = useState(false);
+
+  const [mainTab, setMainTab] = useState<"quick" | "mass">("quick");
+  const [toast, setToast] = useState<ToastPayload | null>(null);
+  const toastTimerRef = useRef<number | null>(null);
+
+  const quickTestFileRef = useRef<HTMLInputElement>(null);
+  const [quickTestFile, setQuickTestFile] = useState<File | null>(null);
+  const [quickTestMemberId, setQuickTestMemberId] = useState("");
+  const [quickTestPhase, setQuickTestPhase] = useState<"idle" | "working">(
+    "idle"
+  );
+  const [quickDragOver, setQuickDragOver] = useState(false);
 
   useEffect(() => {
     startTransition(() => {
@@ -246,6 +308,34 @@ export default function Home() {
     }
   }, []);
 
+  const dismissToast = useCallback(() => {
+    if (toastTimerRef.current) {
+      window.clearTimeout(toastTimerRef.current);
+      toastTimerRef.current = null;
+    }
+    setToast(null);
+  }, []);
+
+  const pushToast = useCallback(
+    (message: string, variant: "error" | "success", hint?: string) => {
+      if (toastTimerRef.current) {
+        window.clearTimeout(toastTimerRef.current);
+      }
+      setToast({ message, variant, hint });
+      toastTimerRef.current = window.setTimeout(() => {
+        setToast(null);
+        toastTimerRef.current = null;
+      }, 5600);
+    },
+    []
+  );
+
+  useEffect(() => {
+    return () => {
+      if (toastTimerRef.current) window.clearTimeout(toastTimerRef.current);
+    };
+  }, []);
+
   const ingestFile = useCallback((file: File) => {
     setUploadLabel(file.name);
     const reader = new FileReader();
@@ -280,7 +370,6 @@ export default function Home() {
     });
     setMassRows([]);
     setMassPhase("idle");
-    setMassError(null);
   }, []);
 
   const onDrop = useCallback(
@@ -297,8 +386,7 @@ export default function Home() {
   const generateEverything = useCallback(() => {
     const names = parseMemberListFromText(input);
     if (names.length === 0) {
-      setNeedMembers(true);
-      window.setTimeout(() => setNeedMembers(false), 3800);
+      pushToast(t.needMembersHint, "error");
       return;
     }
     let id = normalizeCreatorId(creatorIdInput);
@@ -308,31 +396,27 @@ export default function Home() {
     }
     setMassRows([]);
     setMassPhase("idle");
-    setMassError(null);
     setRows(
       names.map((name) => ({
         name,
         path: `/api/protect?userId=${encodeURIComponent(name)}`,
       }))
     );
-  }, [creatorIdInput, input]);
+  }, [creatorIdInput, input, pushToast, t.needMembersHint]);
 
   const generateMassBatches = useCallback(async () => {
     const names = parseMemberListFromText(input);
     if (names.length === 0) {
-      setNeedMembers(true);
-      window.setTimeout(() => setNeedMembers(false), 3800);
+      pushToast(t.needMembersHint, "error");
       return;
     }
     if (galleryItems.length === 0) {
-      setNeedMassImages(true);
-      window.setTimeout(() => setNeedMassImages(false), 3800);
+      pushToast(t.massNeedImagesHint, "error");
       return;
     }
 
     setRows([]);
     setMassRows([]);
-    setMassError(null);
     setMassPhase("uploading");
     setMassProgress({ done: 0, total: galleryItems.length });
 
@@ -378,13 +462,106 @@ export default function Home() {
       setMassPhase("done");
     } catch (e) {
       setMassPhase("error");
-      setMassError(e instanceof Error ? e.message : t.massUploadFailed);
+      pushToast(
+        e instanceof Error ? e.message : t.massUploadFailed,
+        "error"
+      );
     }
-  }, [galleryItems, input, t.massBlobUnavailable, t.massUploadFailed]);
+  }, [
+    galleryItems,
+    input,
+    pushToast,
+    t.massBlobUnavailable,
+    t.massUploadFailed,
+    t.needMembersHint,
+    t.massNeedImagesHint,
+  ]);
 
   const regenCreatorId = useCallback(() => {
     setCreatorIdInput(makeDefaultCreatorId());
   }, []);
+
+  const runQuickSingleTest = useCallback(async () => {
+    if (!quickTestFile) {
+      pushToast(t.quickTestNeedImage, "error");
+      return;
+    }
+    const mid = quickTestMemberId.trim();
+    if (!mid) {
+      pushToast(t.quickTestNeedMember, "error");
+      return;
+    }
+
+    setQuickTestPhase("working");
+    try {
+      const fd = new FormData();
+      fd.set("file", quickTestFile);
+      fd.set("memberId", mid);
+      const res = await fetch("/api/protect", { method: "POST", body: fd });
+      const ct = (res.headers.get("content-type") ?? "").toLowerCase();
+      if (!res.ok) {
+        const data = (await res.json().catch(() => ({}))) as {
+          code?: string;
+          message?: string;
+          error?: string;
+        };
+        if (data.code === "capacity" || res.status === 422) {
+          pushToast(
+            data.message || "Not enough space to embed this ID.",
+            "error",
+            t.toastCapacityHint
+          );
+          setQuickTestPhase("idle");
+          return;
+        }
+        pushToast(
+          data.message || data.error || `Request failed (${res.status})`,
+          "error"
+        );
+        setQuickTestPhase("idle");
+        return;
+      }
+      if (!ct.includes("png") && !ct.includes("octet-stream")) {
+        const data = (await res.json().catch(() => ({}))) as {
+          message?: string;
+        };
+        pushToast(
+          data.message || "Unexpected response from server.",
+          "error"
+        );
+        setQuickTestPhase("idle");
+        return;
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      const safe =
+        mid.replace(/[^a-zA-Z0-9._-]+/g, "_").slice(0, 120) || "watermark";
+      a.download = `creator-guard-${safe}.png`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      pushToast(t.toastProtectReady, "success");
+      setQuickTestPhase("idle");
+    } catch (e) {
+      pushToast(
+        e instanceof Error ? e.message : t.quickTestFailed,
+        "error"
+      );
+      setQuickTestPhase("idle");
+    }
+  }, [
+    quickTestFile,
+    quickTestMemberId,
+    pushToast,
+    t.quickTestFailed,
+    t.quickTestNeedImage,
+    t.quickTestNeedMember,
+    t.toastCapacityHint,
+    t.toastProtectReady,
+  ]);
 
   return (
     <div className="relative min-h-screen bg-gradient-to-b from-slate-950 via-slate-950 to-slate-900">
@@ -410,9 +587,9 @@ export default function Home() {
           </p>
         </header>
 
-        <div className="space-y-5">
+        <div className="space-y-6">
           {/* Portal ID */}
-          <section className="rounded-[1.35rem] border border-white/[0.08] bg-slate-900/60 p-5 shadow-[0_24px_64px_-24px_rgba(0,0,0,0.7)] backdrop-blur-xl sm:p-6">
+          <section className={`${GLASS_PANEL} p-5 sm:p-6`}>
             <div className="flex items-center justify-between gap-3">
               <span className="text-xs font-medium uppercase tracking-wider text-slate-500">
                 {t.portalYourId}
@@ -468,8 +645,149 @@ export default function Home() {
             ) : null}
           </section>
 
+          <div className={`${GLASS_PANEL} p-1.5 sm:p-2`}>
+            <div
+              className="flex gap-1 rounded-[1.35rem] bg-black/30 p-1"
+              role="tablist"
+              aria-label="Protection mode"
+            >
+              <button
+                type="button"
+                role="tab"
+                aria-selected={mainTab === "quick"}
+                onClick={() => setMainTab("quick")}
+                className={`flex-1 rounded-xl py-2.5 text-sm font-semibold tracking-tight transition ${
+                  mainTab === "quick"
+                    ? "bg-white/[0.14] text-white shadow-sm"
+                    : "text-slate-500 hover:text-slate-300"
+                }`}
+              >
+                {t.tabQuickShield}
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={mainTab === "mass"}
+                onClick={() => setMainTab("mass")}
+                className={`flex-1 rounded-xl py-2.5 text-sm font-semibold tracking-tight transition ${
+                  mainTab === "mass"
+                    ? "bg-white/[0.14] text-white shadow-sm"
+                    : "text-slate-500 hover:text-slate-300"
+                }`}
+              >
+                {t.tabMassDelivery}
+              </button>
+            </div>
+          </div>
+
+          {mainTab === "quick" ? (
+            <section className={`${GLASS_PANEL} p-6 sm:p-8`}>
+              <p className="text-center text-[11px] font-medium uppercase tracking-[0.2em] text-slate-500">
+                {t.quickTestTitle}
+              </p>
+              <p className="mx-auto mt-2 max-w-sm text-center text-xs leading-relaxed text-slate-500">
+                {t.quickTestHint}
+              </p>
+
+              <input
+                ref={quickTestFileRef}
+                type="file"
+                accept="image/*"
+                className="hidden"
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  setQuickTestFile(f ?? null);
+                  e.target.value = "";
+                }}
+              />
+              <button
+                type="button"
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  setQuickDragOver(true);
+                }}
+                onDragLeave={() => setQuickDragOver(false)}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  setQuickDragOver(false);
+                  const f = e.dataTransfer.files[0];
+                  if (
+                    f &&
+                    (f.type.startsWith("image/") ||
+                      /\.(jpe?g|png|gif|webp|avif|heic)$/i.test(f.name))
+                  ) {
+                    setQuickTestFile(f);
+                  }
+                }}
+                onClick={() => quickTestFileRef.current?.click()}
+                className={`mt-8 flex min-h-[9rem] w-full flex-col items-center justify-center rounded-2xl border-2 border-dashed px-4 py-8 transition ${
+                  quickDragOver
+                    ? "border-cyan-400/45 bg-cyan-500/[0.08]"
+                    : "border-white/[0.1] bg-black/20 hover:border-white/[0.18]"
+                }`}
+              >
+                <div className="mb-2 flex h-11 w-11 items-center justify-center rounded-2xl bg-white/[0.06] text-cyan-400/90">
+                  <svg
+                    width="22"
+                    height="22"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.7"
+                    strokeLinecap="round"
+                  >
+                    <path d="M12 5v14M5 12l7-7 7 7" />
+                  </svg>
+                </div>
+                <span className="text-sm font-medium text-slate-200">
+                  {quickTestFile
+                    ? replaceTpl(t.quickTestImageChosen, {
+                        name: quickTestFile.name,
+                      })
+                    : t.quickTestImageButton}
+                </span>
+              </button>
+
+              <label
+                htmlFor="quick-test-member"
+                className="mt-8 block text-[11px] font-semibold uppercase tracking-wider text-slate-500"
+              >
+                {t.quickTestMemberLabel}
+              </label>
+              <input
+                id="quick-test-member"
+                type="text"
+                value={quickTestMemberId}
+                onChange={(e) => setQuickTestMemberId(e.target.value)}
+                placeholder={t.quickTestMemberPlaceholder}
+                autoComplete="off"
+                className="mt-2 w-full rounded-2xl border border-white/[0.08] bg-black/35 px-4 py-3.5 text-[15px] text-white placeholder:text-slate-600 focus:border-cyan-500/30 focus:outline-none focus:ring-2 focus:ring-cyan-500/10"
+              />
+
+              <button
+                type="button"
+                onClick={() => void runQuickSingleTest()}
+                disabled={
+                  quickTestPhase === "working" || massPhase === "uploading"
+                }
+                className="mt-10 flex h-16 w-full items-center justify-center gap-2 rounded-2xl bg-gradient-to-b from-cyan-400 to-cyan-600 text-[16px] font-semibold text-slate-950 shadow-lg shadow-cyan-950/30 transition hover:brightness-[1.03] active:scale-[0.995] disabled:cursor-not-allowed disabled:opacity-45"
+              >
+                {quickTestPhase === "working" ? (
+                  <>
+                    <SpinnerRing className="h-5 w-5 border-slate-600/30 border-t-slate-800" />
+                    <span>{t.quickTestWorking}</span>
+                  </>
+                ) : (
+                  t.quickProtectDownload
+                )}
+              </button>
+            </section>
+          ) : null}
+
+          {mainTab === "mass" ? (
+            <>
           {/* Members + drop */}
-          <section className="rounded-[1.35rem] border border-white/[0.08] bg-slate-900/60 p-5 shadow-[0_24px_64px_-24px_rgba(0,0,0,0.7)] backdrop-blur-xl sm:p-6">
+          <section className={`${GLASS_PANEL} p-5 sm:p-6`}>
             <button
               type="button"
               onDragOver={(e) => {
@@ -540,12 +858,6 @@ export default function Home() {
               className="mt-2 w-full rounded-2xl border border-white/[0.07] bg-black/30 px-4 py-3 text-sm text-slate-100 placeholder:text-slate-600 focus:border-cyan-500/35 focus:outline-none focus:ring-2 focus:ring-cyan-500/15"
             />
 
-            {needMembers ? (
-              <p className="mt-3 text-center text-sm text-amber-400/90">
-                {t.needMembersHint}
-              </p>
-            ) : null}
-
             <button
               type="button"
               onClick={generateEverything}
@@ -557,7 +869,7 @@ export default function Home() {
           </section>
 
           {/* Mass protection gallery */}
-          <section className="rounded-[1.35rem] border border-white/[0.08] bg-slate-900/60 p-5 shadow-[0_24px_64px_-24px_rgba(0,0,0,0.7)] backdrop-blur-xl sm:p-6">
+          <section className={`${GLASS_PANEL} p-5 sm:p-6`}>
             <div className="mb-4">
               <h2 className="text-sm font-semibold tracking-tight text-white">
                 {t.massProtectionTitle}
@@ -664,12 +976,6 @@ export default function Home() {
               </button>
             </div>
 
-            {needMassImages ? (
-              <p className="mt-3 text-center text-sm text-amber-400/90">
-                {t.massNeedImagesHint}
-              </p>
-            ) : null}
-
             {massPhase === "uploading" ? (
               <div className="mt-5 space-y-3 rounded-2xl border border-cyan-500/20 bg-cyan-950/20 p-4">
                 <div className="flex items-center gap-3">
@@ -693,12 +999,6 @@ export default function Home() {
                   })}
                 </p>
               </div>
-            ) : null}
-
-            {massPhase === "error" && massError ? (
-              <p className="mt-4 rounded-xl border border-red-500/25 bg-red-950/30 px-3 py-2 text-sm text-red-200/90">
-                {massError}
-              </p>
             ) : null}
 
             <button
@@ -863,7 +1163,18 @@ export default function Home() {
               </ul>
             </section>
           ) : null}
+
+            </>
+          ) : null}
         </div>
+
+        {toast ? (
+          <ToastBanner
+            toast={toast}
+            onDismiss={dismissToast}
+            dismissLabel={t.toastDismissAria}
+          />
+        ) : null}
 
         <footer className="mt-14 border-t border-white/[0.06] pt-10 text-center">
           <Link

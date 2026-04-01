@@ -4,7 +4,10 @@ import { join } from "node:path";
 import { Jimp } from "jimp";
 import { PNGColorType, PNGFilterType } from "@jimp/js-png";
 import { isAllowedProtectSourceUrl } from "@/lib/protect-source-url";
-import { embedMemberIdDct } from "@/lib/watermark-dct";
+import {
+  embedMemberIdDct,
+  WatermarkEmbedCapacityError,
+} from "@/lib/watermark-dct";
 import { type NextRequest, NextResponse } from "next/server";
 
 export const runtime = "nodejs";
@@ -16,6 +19,8 @@ const PROTECT_MAX_WIDTH_BEFORE_DOWNSCALE = 1200;
 const PROTECT_DOWNSCALE_TARGET_WIDTH = 1000;
 
 const PUBLIC_REL = join("public", "test.jpg");
+
+type EmbedIdSource = "memberId" | "userId" | "test_error_fallback" | "form_upload";
 
 async function loadBaseJimp(
   request: NextRequest
@@ -54,22 +59,198 @@ function pickSearchParam(request: NextRequest, key: string): string {
   return raw;
 }
 
+function resolveEmbeddedId(
+  memberTrimmed: string,
+  userTrimmed: string
+): { embeddedId: string; idSource: EmbedIdSource } {
+  if (memberTrimmed) {
+    return { embeddedId: memberTrimmed, idSource: "memberId" };
+  }
+  if (userTrimmed) {
+    return { embeddedId: userTrimmed, idSource: "userId" };
+  }
+  return { embeddedId: FALLBACK_NO_ID, idSource: "test_error_fallback" };
+}
+
+function safeDownloadBaseName(id: string): string {
+  const s = id.replace(/[^a-zA-Z0-9._-]+/g, "_").replace(/^_+|_+$/g, "");
+  return (s.length > 0 ? s : "watermark").slice(0, 120);
+}
+
+/**
+ * Clone, optional downscale, DCT embed, encode PNG — returns binary response or JSON error.
+ * `forceDownload` adds `Content-Disposition: attachment` (POST quick test); GET stays inline-friendly.
+ */
+async function respondProtectedPng(
+  base: Awaited<ReturnType<typeof Jimp.read>>,
+  embeddedId: string,
+  idSource: EmbedIdSource,
+  opts?: { forceDownload?: boolean }
+): Promise<NextResponse> {
+  try {
+    const image = base.clone();
+    const w0 = image.width;
+    if (w0 > PROTECT_MAX_WIDTH_BEFORE_DOWNSCALE) {
+      const h0 = image.height;
+      const tw = PROTECT_DOWNSCALE_TARGET_WIDTH;
+      const th = Math.max(1, Math.round((h0 * tw) / w0));
+      image.resize({ w: tw, h: th });
+      console.log("[Creator Guard protect] auto-resize", {
+        from: `${w0}x${h0}`,
+        to: `${tw}x${th}`,
+      });
+    }
+
+    embedMemberIdDct(image, embeddedId);
+
+    {
+      const { data, width } = image.bitmap;
+      data[0] = 255;
+      data[1] = 0;
+      data[2] = 0;
+      data[3] = 255;
+      console.log("[Creator Guard protect] TEMP_pixel00_red_marker", {
+        data0_R: data[0],
+        data1_G: data[1],
+        data2_B: data[2],
+        data3_A: data[3],
+        width,
+      });
+    }
+
+    const buf = await image.getBuffer("image/png", {
+      colorType: PNGColorType.COLOR,
+      filterType: PNGFilterType.NONE,
+    });
+    const body: Buffer = Buffer.isBuffer(buf) ? buf : Buffer.from(buf);
+
+    const headers: Record<string, string> = {
+      "Content-Type": "image/png",
+      "X-Content-Type-Options": "nosniff",
+      "Cache-Control": "no-cache",
+      "X-Creator-Guard-Embed-Source": idSource,
+    };
+    if (opts?.forceDownload) {
+      const baseName = safeDownloadBaseName(embeddedId);
+      headers["Content-Disposition"] =
+        `attachment; filename="creator-guard-${baseName}.png"`;
+    }
+
+    return new NextResponse(body as unknown as BodyInit, {
+      status: 200,
+      headers,
+    });
+  } catch (err) {
+    console.error("[Creator Guard protect] watermark failed:", err);
+    if (err instanceof WatermarkEmbedCapacityError) {
+      return NextResponse.json(
+        {
+          code: err.code,
+          error: "capacity",
+          message: "Not enough image area to embed this Member ID.",
+          blocksNeeded: err.blocksNeeded,
+          blocksHave: err.blocksHave,
+        },
+        { status: 422 }
+      );
+    }
+    return NextResponse.json(
+      {
+        error: "Image processing failed",
+        message: "Could not embed invisible watermark or encode image.",
+      },
+      { status: 500 }
+    );
+  }
+}
+
+function formUploadLooksLikeImage(file: File): boolean {
+  if (file.type.startsWith("image/")) return true;
+  return /\.(jpe?g|png|gif|webp|avif|bmp|tiff?)$/i.test(file.name);
+}
+
+export async function POST(request: NextRequest) {
+  let formData: FormData;
+  try {
+    formData = await request.formData();
+  } catch {
+    return NextResponse.json(
+      { error: "Invalid body", message: "Expected multipart/form-data." },
+      { status: 400 }
+    );
+  }
+
+  const file = formData.get("file");
+  if (!file || !(file instanceof File)) {
+    return NextResponse.json(
+      { error: "Missing file", message: "Form field `file` must be an image." },
+      { status: 400 }
+    );
+  }
+
+  if (!formUploadLooksLikeImage(file)) {
+    return NextResponse.json(
+      { error: "Invalid file", message: "Upload an image (JPEG, PNG, WebP, …)." },
+      { status: 400 }
+    );
+  }
+
+  if (file.size > MAX_REMOTE_IMAGE_BYTES) {
+    return NextResponse.json({ error: "Image too large" }, { status: 413 });
+  }
+
+  let base: Awaited<ReturnType<typeof Jimp.read>>;
+  try {
+    const ab = await file.arrayBuffer();
+    base = await Jimp.read(Buffer.from(ab));
+  } catch (err) {
+    console.error("[Creator Guard protect] POST decode failed:", err);
+    return NextResponse.json(
+      {
+        error: "Decode failed",
+        message: "Could not read that file as an image.",
+      },
+      { status: 400 }
+    );
+  }
+
+  const memberTrimmed = String(formData.get("memberId") ?? "").trim();
+  const userTrimmed = String(formData.get("userId") ?? "").trim();
+  if (!memberTrimmed && !userTrimmed) {
+    return NextResponse.json(
+      {
+        error: "Missing memberId",
+        message: "Form field `memberId` (or `userId`) is required.",
+      },
+      { status: 400 }
+    );
+  }
+  const { embeddedId, idSource: baseSource } = resolveEmbeddedId(
+    memberTrimmed,
+    userTrimmed
+  );
+  const idSource: EmbedIdSource =
+    baseSource === "test_error_fallback" ? "form_upload" : baseSource;
+
+  console.log("[Creator Guard protect] POST form upload", {
+    embeddedId,
+    idSource,
+    memberId: memberTrimmed || "(empty)",
+    userId: userTrimmed || "(empty)",
+  });
+
+  return respondProtectedPng(base, embeddedId, idSource, {
+    forceDownload: true,
+  });
+}
+
 export async function GET(request: NextRequest) {
   const memberTrimmed = pickSearchParam(request, "memberId");
   const userTrimmed = pickSearchParam(request, "userId");
-
-  let embeddedId: string;
-  let idSource: "memberId" | "userId" | "test_error_fallback";
-  if (memberTrimmed) {
-    embeddedId = memberTrimmed;
-    idSource = "memberId";
-  } else if (userTrimmed) {
-    embeddedId = userTrimmed;
-    idSource = "userId";
-  } else {
-    embeddedId = FALLBACK_NO_ID;
-    idSource = "test_error_fallback";
-  }
+  const { embeddedId, idSource } = resolveEmbeddedId(
+    memberTrimmed,
+    userTrimmed
+  );
 
   console.log(
     "[Creator Guard protect] DCT embedding id:",
@@ -146,71 +327,5 @@ export async function GET(request: NextRequest) {
     );
   }
 
-  try {
-    const image = base.clone();
-    const w0 = image.width;
-    if (w0 > PROTECT_MAX_WIDTH_BEFORE_DOWNSCALE) {
-      const h0 = image.height;
-      const tw = PROTECT_DOWNSCALE_TARGET_WIDTH;
-      const th = Math.max(1, Math.round((h0 * tw) / w0));
-      image.resize({ w: tw, h: th });
-      console.log("[Creator Guard protect] auto-resize", {
-        from: `${w0}x${h0}`,
-        to: `${tw}x${th}`,
-      });
-    }
-
-    embedMemberIdDct(image, embeddedId);
-
-    /**
-     * TEMP block-sync probe: force (0,0) to opaque red. Extract should see
-     * `data[0..3] = [255,0,0,255]` if bitmap row-major RGBA matches embed grid origin.
-     * Remove after debugging `magic_missing` / block offset.
-     */
-    {
-      const { data, width } = image.bitmap;
-      data[0] = 255;
-      data[1] = 0;
-      data[2] = 0;
-      data[3] = 255;
-      console.log("[Creator Guard protect] TEMP_pixel00_red_marker", {
-        data0_R: data[0],
-        data1_G: data[1],
-        data2_B: data[2],
-        data3_A: data[3],
-        width,
-      });
-    }
-
-    /**
-     * Truecolor RGB — PNG color type 2, 8 bits/channel × 3 = 24-bit RGB (no palette / indexed color).
-     * Filter NONE avoids encoder “auto” filter heuristics that might interact oddly with fragile coeffs.
-     */
-    const buf = await image.getBuffer("image/png", {
-      colorType: PNGColorType.COLOR,
-      filterType: PNGFilterType.NONE,
-    });
-    const body: Buffer = Buffer.isBuffer(buf) ? buf : Buffer.from(buf);
-
-    return new NextResponse(body as unknown as BodyInit, {
-      status: 200,
-      headers: {
-        /** Strict binary PNG — no charset; prevents MIME sniffing issues. */
-        "Content-Type": "image/png",
-        "X-Content-Type-Options": "nosniff",
-        "Cache-Control": "no-cache",
-        /** Debug which id path ran (check Network → Response headers on /api/protect). */
-        "X-Creator-Guard-Embed-Source": idSource,
-      },
-    });
-  } catch (err) {
-    console.error("[Creator Guard protect] watermark failed:", err);
-    return NextResponse.json(
-      {
-        error: "Image processing failed",
-        message: "Could not embed invisible watermark or encode image.",
-      },
-      { status: 500 }
-    );
-  }
+  return respondProtectedPng(base, embeddedId, idSource);
 }
