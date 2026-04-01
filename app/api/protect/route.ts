@@ -1,3 +1,4 @@
+import { Buffer } from "node:buffer";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { Jimp } from "jimp";
@@ -9,6 +10,10 @@ import { type NextRequest, NextResponse } from "next/server";
 export const runtime = "nodejs";
 
 const MAX_REMOTE_IMAGE_BYTES = 25 * 1024 * 1024;
+
+/** Wide images blow interior 8×8 block count and risk serverless timeouts; shrink before DCT embed. */
+const PROTECT_MAX_WIDTH_BEFORE_DOWNSCALE = 1200;
+const PROTECT_DOWNSCALE_TARGET_WIDTH = 1000;
 
 const PUBLIC_REL = join("public", "test.jpg");
 
@@ -143,6 +148,18 @@ export async function GET(request: NextRequest) {
 
   try {
     const image = base.clone();
+    const w0 = image.width;
+    if (w0 > PROTECT_MAX_WIDTH_BEFORE_DOWNSCALE) {
+      const h0 = image.height;
+      const tw = PROTECT_DOWNSCALE_TARGET_WIDTH;
+      const th = Math.max(1, Math.round((h0 * tw) / w0));
+      image.resize({ w: tw, h: th });
+      console.log("[Creator Guard protect] auto-resize", {
+        from: `${w0}x${h0}`,
+        to: `${tw}x${th}`,
+      });
+    }
+
     embedMemberIdDct(image, embeddedId);
 
     /**
@@ -173,9 +190,9 @@ export async function GET(request: NextRequest) {
       colorType: PNGColorType.COLOR,
       filterType: PNGFilterType.NONE,
     });
-    const body = new Uint8Array(buf);
+    const body: Buffer = Buffer.isBuffer(buf) ? buf : Buffer.from(buf);
 
-    return new NextResponse(body, {
+    return new NextResponse(body as unknown as BodyInit, {
       status: 200,
       headers: {
         /** Strict binary PNG — no charset; prevents MIME sniffing issues. */

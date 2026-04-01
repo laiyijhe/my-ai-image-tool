@@ -52,14 +52,15 @@ const EMBED_SCALE_GROWTH = 1.12;
 
 /**
  * Embed (Steel): enforce **magnitude** separation `|DCT(COEFF_A)| − |DCT(COEFF_B)|`.
- * Bit **1**: gap ≥ this; bit **0**: gap ≤ −this (i.e. |B| exceeds |A| by at least this margin).
+ * Bit **1**: gap ≥ target; bit **0**: gap ≤ −target. Primary **15**; per-block fallback **10** if clamp starves margin.
  */
-const EMBED_MAG_GAP_TARGET = 15;
+const EMBED_MAG_GAP_TARGET_PRIMARY = 15;
+const EMBED_MAG_GAP_TARGET_RELAXED = 10;
 
 const GAP_ENFORCE_MAX_STEPS = 192;
 
 /**
- * Read/extract: `|COEFF_A| − |COEFF_B|` vs this (embed uses `EMBED_MAG_GAP_TARGET` = 15 on disk).
+ * Read/extract: `|COEFF_A| − |COEFF_B|` vs this (embed may use 15 or 10 on disk).
  */
 const EXTRACT_MAG_GAP_THRESHOLD = 5;
 
@@ -522,7 +523,7 @@ function applyBlockDeltaToRgb(
   bx: number,
   by: number,
   delta: Float64Array,
-  opts?: { targetBit?: number }
+  opts?: { targetBit?: number; magGapTarget?: number }
 ): void {
   let i = 0;
   for (let dx = 0; dx < 8; dx++) {
@@ -544,6 +545,7 @@ function applyBlockDeltaToRgb(
 
   // Zero-tolerance: integer RGB clamp shrinks the DCT magnitude margin from the ideal IDCT delta.
   const tb = opts?.targetBit;
+  const gapT = opts?.magGapTarget ?? EMBED_MAG_GAP_TARGET_PRIMARY;
   if (
     tb !== undefined &&
     readBitFromBlock(data, width, height, bx, by) === tb
@@ -551,11 +553,9 @@ function applyBlockDeltaToRgb(
     for (let guard = 0; guard < 8; guard++) {
       const mg = blockMagGap(data, width, height, bx, by);
       const ok =
-        tb === 1
-          ? mg >= EMBED_MAG_GAP_TARGET
-          : mg <= -EMBED_MAG_GAP_TARGET;
+        tb === 1 ? mg >= gapT : mg <= -gapT;
       if (ok && readBitFromBlock(data, width, height, bx, by) === tb) break;
-      enforceMinDctGapAfterClamp(data, width, height, bx, by, tb);
+      enforceMinDctGapAfterClamp(data, width, height, bx, by, tb, gapT);
     }
   }
 }
@@ -671,12 +671,11 @@ function embedSatisfiesMagProtocol(
   height: number,
   bx: number,
   by: number,
-  bit: number
+  bit: number,
+  magGapTarget: number
 ): boolean {
   const mg = blockMagGap(data, width, height, bx, by);
-  return bit === 1
-    ? mg >= EMBED_MAG_GAP_TARGET
-    : mg <= -EMBED_MAG_GAP_TARGET;
+  return bit === 1 ? mg >= magGapTarget : mg <= -magGapTarget;
 }
 
 /**
@@ -688,14 +687,15 @@ function enforceMinDctGapAfterClamp(
   height: number,
   bx: number,
   by: number,
-  bit: number
+  bit: number,
+  magGapTarget: number
 ): void {
   const snap = new Uint8Array(64 * 3);
 
   for (let step = 0; step < GAP_ENFORCE_MAX_STEPS; step++) {
     const mg = blockMagGap(data, width, height, bx, by);
     const ok =
-      bit === 1 ? mg >= EMBED_MAG_GAP_TARGET : mg <= -EMBED_MAG_GAP_TARGET;
+      bit === 1 ? mg >= magGapTarget : mg <= -magGapTarget;
     if (ok && readBitFromBlock(data, width, height, bx, by) === bit) return;
 
     copyBlockRgb(data, width, height, bx, by, snap);
@@ -795,35 +795,53 @@ function embedBitInBlock(
   const saved = new Uint8Array(64 * 3);
   copyBlockRgb(data, width, height, bx, by, saved);
 
-  let scale = 1;
-  for (let iter = 0; iter < EMBED_VERIFY_ITERS; iter++) {
-    pasteBlockRgb(data, width, height, bx, by, saved);
+  function attemptWithMagGapTarget(magGapTarget: number): boolean {
+    let scale = 1;
+    for (let iter = 0; iter < EMBED_VERIFY_ITERS; iter++) {
+      pasteBlockRgb(data, width, height, bx, by, saved);
 
-    const luma = readLumaBlock(data, width, height, bx, by);
-    const coeff = dct8x8(luma);
-    const a = coeff[COEFF_A]!;
-    const b = coeff[COEFF_B]!;
-    const mag = ALPHA * scale;
-    if (bit === 1) {
-      coeff[COEFF_A] = a + mag;
-      coeff[COEFF_B] = b - mag;
-    } else {
-      coeff[COEFF_A] = a - mag;
-      coeff[COEFF_B] = b + mag;
-    }
-    const newLuma = idct8x8(coeff);
-    const d = new Float64Array(64);
-    for (let i = 0; i < 64; i++) d[i] = newLuma[i]! - luma[i]!;
-    applyBlockDeltaToRgb(data, width, height, bx, by, d, { targetBit: bit });
+      const luma = readLumaBlock(data, width, height, bx, by);
+      const coeff = dct8x8(luma);
+      const a = coeff[COEFF_A]!;
+      const b = coeff[COEFF_B]!;
+      const mag = ALPHA * scale;
+      if (bit === 1) {
+        coeff[COEFF_A] = a + mag;
+        coeff[COEFF_B] = b - mag;
+      } else {
+        coeff[COEFF_A] = a - mag;
+        coeff[COEFF_B] = b + mag;
+      }
+      const newLuma = idct8x8(coeff);
+      const d = new Float64Array(64);
+      for (let i = 0; i < 64; i++) d[i] = newLuma[i]! - luma[i]!;
+      applyBlockDeltaToRgb(data, width, height, bx, by, d, {
+        targetBit: bit,
+        magGapTarget,
+      });
 
-    if (
-      readBitFromBlock(data, width, height, bx, by) === bit &&
-      embedSatisfiesMagProtocol(data, width, height, bx, by, bit)
-    ) {
-      return;
+      if (
+        readBitFromBlock(data, width, height, bx, by) === bit &&
+        embedSatisfiesMagProtocol(
+          data,
+          width,
+          height,
+          bx,
+          by,
+          bit,
+          magGapTarget
+        )
+      ) {
+        return true;
+      }
+      scale = Math.min(scale * EMBED_SCALE_GROWTH, EMBED_SCALE_MAX);
     }
-    scale = Math.min(scale * EMBED_SCALE_GROWTH, EMBED_SCALE_MAX);
+    return false;
   }
+
+  if (attemptWithMagGapTarget(EMBED_MAG_GAP_TARGET_PRIMARY)) return;
+  pasteBlockRgb(data, width, height, bx, by, saved);
+  attemptWithMagGapTarget(EMBED_MAG_GAP_TARGET_RELAXED);
 }
 
 /**
