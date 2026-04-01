@@ -32,7 +32,8 @@ export interface WatermarkVerifyExtractDebug {
 
 /**
  * Creator Guard — DCT v4 (production embed) / v3 (legacy extract)
- * Cyclic 8×8 blocks, BT.601 luma, **mid-diagonal** DCT (2,3) vs (3,2), 5× Steel redundancy,
+ * Cyclic **sparse** interior blocks (odd bx+by checkerboard + central 70% only), BT.601 luma,
+ * **mid-diagonal** DCT (2,3) vs (3,2), 5× Steel redundancy,
  * texture-adaptive magnitude gap, **Hamming(7,4)** on the ID body (v4), magnitude gap decode.
  */
 export const WATERMARK_MAGIC_V3 = Buffer.from([0x43, 0x47, 0x57, 0x03]);
@@ -922,6 +923,45 @@ function blockIndexToCoords(
   return { bx, by };
 }
 
+/**
+ * Vercel-speed path: **skip ~50%** of interior blocks (even `bx+by`), and only blocks whose
+ * center pixel lies in the **middle 70%** of width/height (15% margin each edge).
+ * Embed/extract share the same ordered index list `0..embedBlockCount-1` for the physical stream.
+ */
+function blockEligibleForSparseEmbed(
+  bx: number,
+  by: number,
+  width: number,
+  height: number
+): boolean {
+  if (((bx + by) & 1) === 0) return false;
+  const cx = bx * 8 + 4;
+  const cy = by * 8 + 4;
+  const m = 0.15;
+  const xLo = width * m;
+  const xHi = width * (1 - m);
+  const yLo = height * m;
+  const yHi = height * (1 - m);
+  return cx >= xLo && cx <= xHi && cy >= yLo && cy <= yHi;
+}
+
+function buildSparseEmbedBlockIndices(
+  width: number,
+  height: number,
+  bw: number,
+  bh: number
+): number[] {
+  const total = bw * bh;
+  const out: number[] = [];
+  for (let k = 0; k < total; k++) {
+    const { bx, by } = blockIndexToCoords(k, bw);
+    if (blockEligibleForSparseEmbed(bx, by, width, height)) {
+      out.push(k);
+    }
+  }
+  return out;
+}
+
 function embedBitInBlock(
   data: Buffer,
   width: number,
@@ -1589,18 +1629,21 @@ export function embedMemberIdDctInBitmap(
   const expandedBits = tripleExpandPayloadBits(logicalBits);
   const Lphy = expandedBits.length;
   const { bw, bh, count, fullBw, fullBh } = blockGridDims(width, height);
+  const sparseK = buildSparseEmbedBlockIndices(width, height, bw, bh);
+  const embedBlockCount = sparseK.length;
 
-  if (count < Lphy) {
+  if (embedBlockCount < Lphy) {
     throw new WatermarkEmbedCapacityError(
-      `Image too small for cyclic DCT watermark: need at least ${Lphy} interior 8×8 blocks (Steel ${PHYSICAL_REDUNDANCY}× stream), have ${count} (${bw}×${bh} interior; full ${fullBw}×${fullBh})`,
+      `Image too small for sparse DCT watermark: need at least ${Lphy} eligible 8×8 blocks (checkerboard + central 70%, Steel ${PHYSICAL_REDUNDANCY}×), have ${embedBlockCount} (full interior ${count}; ${bw}×${bh}; full grid ${fullBw}×${fullBh})`,
       Lphy,
-      count
+      embedBlockCount
     );
   }
 
-  for (let k = 0; k < count; k++) {
+  for (let i = 0; i < embedBlockCount; i++) {
+    const k = sparseK[i]!;
     const { bx, by } = blockIndexToCoords(k, bw);
-    const bit = expandedBits[k % Lphy]!;
+    const bit = expandedBits[i % Lphy]!;
     embedBitInBlock(data, width, height, bx, by, bit);
   }
 
@@ -1626,8 +1669,10 @@ export function extractMemberIdDctDetailed(
   enforceBitmapOpaque(data, width, height);
 
   const { bw, bh, count, fullBw, fullBh } = blockGridDims(width, height);
+  const sparseK = buildSparseEmbedBlockIndices(width, height, bw, bh);
+  const embedBlockCount = sparseK.length;
 
-  if (width < 16 || height < 16 || count === 0) {
+  if (width < 16 || height < 16 || count === 0 || embedBlockCount === 0) {
     return { ok: false, code: "capacity" };
   }
 
@@ -1635,11 +1680,12 @@ export function extractMemberIdDctDetailed(
    * Auto-align: search first ≤128 collapsed logical bits for CGW\\x03 or CGW\\x04 (raw + stream XOR).
    * `magicSkipBits` + `streamInvertCollapsed` are the production settings for this image.
    */
-  const blockBits: number[] = new Array(count);
-  for (let k = 0; k < count; k++) {
+  const blockBits: number[] = new Array(embedBlockCount);
+  for (let i = 0; i < embedBlockCount; i++) {
+    const k = sparseK[i]!;
     const { bx, by } = blockIndexToCoords(k, bw);
     const coeff = dct8x8(readLumaBlock(data, width, height, bx, by));
-    blockBits[k] = decodeBitFromMidfreqGapForExtract(coeff);
+    blockBits[i] = decodeBitFromMidfreqGapForExtract(coeff);
   }
 
   let magicSkipBits = EXTRACT_COLLAPSED_LEADING_SKIP_FALLBACK;
@@ -1655,10 +1701,10 @@ export function extractMemberIdDctDetailed(
     let auditPhysicalLen1: number[] | null = null;
     let auditCollapsedLen1: number[] | null = null;
     let auditCollapsedLen10: number[] | null = null;
-    if (count >= Lphy1) {
+    if (embedBlockCount >= Lphy1) {
       auditPhysicalLen1 = reconstructBigEndianBitsFromBlocks(
         blockBits,
-        count,
+        embedBlockCount,
         Lphy1
       );
       if (auditPhysicalLen1) {
@@ -1667,10 +1713,10 @@ export function extractMemberIdDctDetailed(
         );
       }
     }
-    if (count >= Lphy10) {
+    if (embedBlockCount >= Lphy10) {
       const p10 = reconstructBigEndianBitsFromBlocks(
         blockBits,
-        count,
+        embedBlockCount,
         Lphy10
       );
       if (p10) {
@@ -1724,18 +1770,18 @@ export function extractMemberIdDctDetailed(
       blockBits,
       bw,
       bh,
-      count,
+      count: embedBlockCount,
       fullBw,
       fullBh,
       magicSkipBits,
       streamInvertCollapsed,
     });
 
-  if (count < minInteriorBlocks) {
+  if (embedBlockCount < minInteriorBlocks) {
     console.warn(
       "[Creator Guard DCT] interior_blocks_below_magic_skip_plus_32",
       {
-        count,
+        count: embedBlockCount,
         minInteriorBlocks,
         magicSkipBits,
       }
@@ -1744,11 +1790,11 @@ export function extractMemberIdDctDetailed(
   }
 
   const minBlocksPhysicalLen1 = maxPhysicalStreamBitLengthForLen(1, magicSkipBits);
-  if (count < minBlocksPhysicalLen1) {
+  if (embedBlockCount < minBlocksPhysicalLen1) {
     console.warn(
       "[Creator Guard DCT] insufficient_interior_blocks_for_physical_stream_len1",
       {
-        count,
+        count: embedBlockCount,
         requiredPhysicalStreamBits: minBlocksPhysicalLen1,
         magicSkipBits,
       }
@@ -1776,13 +1822,13 @@ export function extractMemberIdDctDetailed(
         magicSkipBits,
         ver
       );
-      if (count < Lphy) {
+      if (embedBlockCount < Lphy) {
         continue;
       }
 
       const allBits = reconstructBigEndianBitsFromBlocks(
         blockBits,
-        count,
+        embedBlockCount,
         Lphy
       );
       if (!allBits || allBits.length !== Lphy) {
@@ -2081,7 +2127,7 @@ export function extractMemberIdDctDetailed(
   if (hadBruteMagicMatch) {
     const blind = tryBlindExtractAfterMagicMarker(
       blockBits,
-      count,
+      embedBlockCount,
       magicSkipBits,
       streamInvertCollapsed
     );
@@ -2104,7 +2150,7 @@ export function extractMemberIdDctDetailed(
     for (const fixedLen of EMERGENCY_FIXED_USER_ID_LENS) {
       const rescued = tryEmergencyFixedMemberLenExtract(
         blockBits,
-        count,
+        embedBlockCount,
         magicSkipBits,
         streamInvertCollapsed,
         fixedLen
@@ -2119,7 +2165,7 @@ export function extractMemberIdDctDetailed(
     auditCollapsedLen10,
     auditCollapsedLen1,
     blockBits,
-    count,
+    count: embedBlockCount,
     magicSkipBits,
     minInteriorBlocksForPad: magicSkipBits + INTERIOR_PADDING,
   });

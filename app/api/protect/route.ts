@@ -15,23 +15,29 @@ export const runtime = "nodejs";
 
 const MAX_REMOTE_IMAGE_BYTES = 25 * 1024 * 1024;
 
-/** Prioritize finishing under serverless limits; ~720px wide max before DCT. */
-const PROTECT_MAX_WIDTH_BEFORE_DOWNSCALE = 720;
-const PROTECT_DOWNSCALE_TARGET_WIDTH = 720;
+/** Emergency cap for Vercel Hobby — ~600px wide max before DCT (success over resolution). */
+const PROTECT_MAX_WIDTH_BEFORE_DOWNSCALE = 600;
+const PROTECT_DOWNSCALE_TARGET_WIDTH = 600;
+
+/** Faster JPEG/TIFF decode; avoid random access when possible. */
+const SHARP_DECODE_OPTIONS = { sequentialRead: true } as const;
 
 const PUBLIC_REL = join("public", "test.jpg");
 
 type EmbedIdSource = "memberId" | "userId" | "test_error_fallback" | "form_upload";
 
-/** Decode image to RGBA; downscale if wider than threshold (Sharp raw pipeline). */
+/**
+ * Decode image to RGBA; downscale if wider than threshold (Sharp raw pipeline).
+ * Sharp omits output metadata by default (no `keepMetadata()`); there is no `.strip()` chain — see Sharp docs.
+ */
 async function decodeResizeToRgba(
   input: Buffer
 ): Promise<{ data: Buffer; width: number; height: number }> {
-  const meta = await sharp(input).metadata();
+  const meta = await sharp(input, SHARP_DECODE_OPTIONS).metadata();
   const w0 = meta.width ?? 0;
   const h0 = meta.height ?? 1;
 
-  let pipeline = sharp(input).ensureAlpha();
+  let pipeline = sharp(input, SHARP_DECODE_OPTIONS).ensureAlpha();
 
   if (w0 > PROTECT_MAX_WIDTH_BEFORE_DOWNSCALE) {
     const tw = PROTECT_DOWNSCALE_TARGET_WIDTH;
