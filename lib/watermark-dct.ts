@@ -33,7 +33,7 @@ export interface WatermarkVerifyExtractDebug {
 /**
  * Creator Guard — DCT v4 (production embed) / v3 (legacy extract)
  * Cyclic **sparse** interior blocks (odd bx+by checkerboard + central 70% only), BT.601 luma,
- * **mid-diagonal** DCT (2,3) vs (3,2), 5× Steel redundancy,
+ * **mid-diagonal** DCT (2,3) vs (3,2), 5× Steel redundancy (**10×** on the first 32 logical bits = 4-byte magic),
  * texture-adaptive magnitude gap, **Hamming(7,4)** on the ID body (v4), magnitude gap decode.
  */
 export const WATERMARK_MAGIC_V3 = Buffer.from([0x43, 0x47, 0x57, 0x03]);
@@ -72,21 +72,57 @@ const EMBED_SCALE_GROWTH = 1.12;
 
 /**
  * Embed (Steel): **magnitude** separation `|DCT(COEFF_A)| − |DCT(COEFF_B)|`.
- * **Texture-adaptive** primary target: flat blocks **13** (12–15 band); detailed blocks **28** (720p embed).
- * Relaxed fallback **10** if clamp starves margin.
+ * **Adaptive perceptual masking** via `getAdaptiveMagnitude` (HVS): weak in shadows/highlights
+ * and smooth regions; strong in textured areas. Relaxed pass uses a lower floor if primary fails.
  */
-const EMBED_MAG_GAP_TARGET_FLAT = 13;
-const EMBED_MAG_GAP_TARGET_TEXTURE = 28;
-const EMBED_MAG_GAP_TARGET_RELAXED = 10;
-/** Population variance of 8×8 luma (0–255); at/above → texture strength. */
-const BLOCK_LUMA_VAR_THRESHOLD = 120;
+/** Below this mean luma → shadow protection mag **8**. */
+const LUMA_AVG_SHADOW_MAX = 40;
+/** Ramp luma anchor (mag **8** at **Y → 140⁺**); blocks with **`yAvg >` this** take the ramp before variance tiering. */
+const BRIGHT_RAMP_Y_LO = 140;
+/** Inclusive high end of ramp; **`Y >` this** → flat absolute stealth **3**. */
+const BRIGHT_RAMP_Y_HI = 250;
+/** Smooth vs textured split (population variance of 8×8 BT.601 luma). */
+const BLOCK_VAR_SMOOTH_LT = 100;
+/** Above this variance → high-contrast edge (e.g. logo boundary). On **`Y > 140`** blocks, linen/texture must stay below this to use the bright ramp only. */
+const BLOCK_VAR_HIGH_CONTRAST_GT = 500;
+
+/**
+ * Near-white blocks: smallest practical gap for stealth (prioritize invisibility over BER).
+ * Expect higher bit errors on flat white; 10× physical redundancy on the magic header absorbs much of it.
+ */
+const EMBED_MAG_GAP_NEAR_WHITE = 3;
+const EMBED_MAG_GAP_LUMA_EXTREME = 8;
+/** Skin / flat mid-luma smooth tier (was 10). */
+const EMBED_MAG_GAP_SMOOTH = 8;
+const EMBED_MAG_GAP_TEXTURED = 20;
+/** Logo-edge / high-contrast 8×8 blocks (`variance > BLOCK_VAR_HIGH_CONTRAST_GT`). */
+const EMBED_MAG_GAP_EDGE_CONTRAST = 25;
+/** Fallback when primary target cannot be met after clamp (step toward weaker gap). */
+const EMBED_MAG_GAP_RELAXED_STEP = 8;
+/** Last resort rung below `EMBED_MAG_GAP_LUMA_EXTREME` when primary is already 8. */
+const EMBED_MAG_GAP_ULTRA_RELAXED = 6;
 
 const GAP_ENFORCE_MAX_STEPS = 192;
 
 /**
- * Read/extract: `|COEFF_A| − |COEFF_B|` vs this (embed uses 13/28 or 10 on disk).
+ * Signed gap `|A|−|B|` vs ±threshold for bit 1 / 0; tie band uses sign of gap.
+ * **`magTarget < 8`** (e.g. ramp **3–7**) → **1**; **`8 ≤ magTarget < 14`** → **2** (covers ramp top **8**).
+ * **`≥14`** → **3**, **`≥18`** → **5** (textured **20** / edge **25**). Deep-scan **`bias -1`** can reach **0** when base **t === 1**.
  */
-const EXTRACT_MAG_GAP_THRESHOLD = 6;
+export function extractBitThresholdForMagTarget(
+  magTarget: number,
+  thresholdBias = 0
+): number {
+  let t: number;
+  if (magTarget >= 18) t = 5;
+  else if (magTarget >= 14) t = 3;
+  else if (magTarget >= 8) t = 2;
+  else t = 1;
+
+  t += thresholdBias;
+  if (t < 0) t = 0;
+  return t;
+}
 
 /**
  * Extract-only: logical **1** only if **all** redundant physical reads are 1 (see `PHYSICAL_REDUNDANCY`).
@@ -111,8 +147,8 @@ const EXTRACT_COLLAPSED_LEADING_SKIP_FALLBACK = 5;
  */
 const EXTRACT_INVERT_DCT_GAP_DECODER = false;
 
-/** Inclusive max start index for magic alignment scan: `i` = 0 … 128. */
-const MAGIC_BRUTE_FORCE_MAX_START_BIT = 128;
+/** Inclusive max start index for magic alignment scan (wider window for slight resize / misalignment). */
+const MAGIC_BRUTE_FORCE_MAX_START_BIT = 256;
 
 /** Max Hamming distance vs CGW magic (v3 `\\x03` or v4 `\\x04`) first 32 bits to accept a window. */
 const MAGIC_HAMMING_MAX_ERRORS = 22;
@@ -379,6 +415,38 @@ function collapsedLogicalBitCountForPayloadVersion(
   return collapsedSkipBits + 48 + idEccLogicalBitCountV4(len);
 }
 
+/** First 32 logical bits of v4 payload = 4-byte magic (MSB-first stream); extra physical redundancy only there. */
+const V4_MAGIC_HEADER_LOGICAL_BITS = 32;
+
+/** v4 payload-only physical bits (after collapsed skip): magic × 2×R, remainder × R. */
+function v4PayloadPhysicalBitCount(len: number): number {
+  const Lc = 48 + idEccLogicalBitCountV4(len);
+  return (
+    V4_MAGIC_HEADER_LOGICAL_BITS * (2 * PHYSICAL_REDUNDANCY) +
+    (Lc - V4_MAGIC_HEADER_LOGICAL_BITS) * PHYSICAL_REDUNDANCY
+  );
+}
+
+/** All-0 / all-1 magic would repeat identical weak DCT tweaks across many blocks (visible grid). */
+function assertV4MagicHeaderLogicalBitsNotDegenerate(
+  logicalBits: number[]
+): void {
+  if (logicalBits.length < V4_MAGIC_HEADER_LOGICAL_BITS) {
+    throw new Error(
+      "Creator Guard DCT: v4 logical stream shorter than magic header"
+    );
+  }
+  let ones = 0;
+  for (let i = 0; i < V4_MAGIC_HEADER_LOGICAL_BITS; i++) {
+    ones += logicalBits[i]! & 1;
+  }
+  if (ones === 0 || ones === V4_MAGIC_HEADER_LOGICAL_BITS) {
+    throw new Error(
+      "Creator Guard DCT: magic header (first 32 logical bits) cannot be all 0 or all 1"
+    );
+  }
+}
+
 function maxCollapsedLogicalBitCountForLen(
   len: number,
   collapsedSkipBits: number
@@ -395,18 +463,27 @@ function physicalStreamBitLengthForPayloadVersion(
   collapsedSkipBits: number,
   ver: 3 | 4
 ): number {
+  if (ver === 3) {
+    return (
+      PHYSICAL_REDUNDANCY *
+      collapsedLogicalBitCountForPayloadVersion(len, collapsedSkipBits, 3)
+    );
+  }
   return (
-    PHYSICAL_REDUNDANCY *
-    collapsedLogicalBitCountForPayloadVersion(len, collapsedSkipBits, ver)
+    collapsedSkipBits * PHYSICAL_REDUNDANCY + v4PayloadPhysicalBitCount(len)
   );
 }
 
-/** Worst-case physical bits for `len` (max of v3 raw vs v4 Hamming). */
+/** Worst-case physical bits for `len` (max of v3 raw vs v4 Hamming + magic redundancy). */
 function maxPhysicalStreamBitLengthForLen(
   len: number,
   collapsedSkipBits: number
 ): number {
-  return PHYSICAL_REDUNDANCY * maxCollapsedLogicalBitCountForLen(len, collapsedSkipBits);
+  return Math.max(
+    PHYSICAL_REDUNDANCY *
+      collapsedLogicalBitCountForPayloadVersion(len, collapsedSkipBits, 3),
+    physicalStreamBitLengthForPayloadVersion(len, collapsedSkipBits, 4)
+  );
 }
 
 /** v3: magic(4) + uint16BE len + utf8 id — contiguous stream bits after skip. */
@@ -442,16 +519,55 @@ function sliceCollapsedHeaderAndEccV4(
   };
 }
 
-function blockLumaPopulationVariance(luma: Float32Array): number {
+/**
+ * Per-block perceptual magnitude target (DCT gap).
+ * **V4.8 luma ramp (140–250):** if **`yAvg > 140`** and **`variance ≤ 500`**, mag is **only** the bright ramp **[3, 8]** (then **`Y > 250` → 3**).
+ * If **`yAvg > 140`** and **`variance > 500`**, **25** (edge). For **`yAvg ≤ 140`**: **`variance > 500` → 25**; **`Y < 40` → 8**; else **smooth 8 / textured 20**.
+ * Independent of embedded **Member ID** / **userId** — uses only the 8×8 luma block.
+ */
+export function getAdaptiveMagnitude(luma: Float32Array): number {
   let sum = 0;
   for (let i = 0; i < 64; i++) sum += luma[i]!;
-  const mean = sum / 64;
-  let v = 0;
+  const yAvg = sum * (1 / 64);
+
+  let varAcc = 0;
   for (let i = 0; i < 64; i++) {
-    const d = luma[i]! - mean;
-    v += d * d;
+    const d = luma[i]! - yAvg;
+    varAcc += d * d;
   }
-  return v / 64;
+  const variance = varAcc * (1 / 64);
+
+  if (yAvg > BRIGHT_RAMP_Y_LO) {
+    if (variance > BLOCK_VAR_HIGH_CONTRAST_GT) {
+      return EMBED_MAG_GAP_EDGE_CONTRAST;
+    }
+    if (yAvg > BRIGHT_RAMP_Y_HI) {
+      return EMBED_MAG_GAP_NEAR_WHITE;
+    }
+    const span = BRIGHT_RAMP_Y_HI - BRIGHT_RAMP_Y_LO;
+    const ramp = Math.round(
+      EMBED_MAG_GAP_LUMA_EXTREME -
+        ((yAvg - BRIGHT_RAMP_Y_LO) / span) *
+          (EMBED_MAG_GAP_LUMA_EXTREME - EMBED_MAG_GAP_NEAR_WHITE)
+    );
+    return Math.min(
+      Math.max(ramp, EMBED_MAG_GAP_NEAR_WHITE),
+      EMBED_MAG_GAP_LUMA_EXTREME
+    );
+  }
+
+  if (variance > BLOCK_VAR_HIGH_CONTRAST_GT) {
+    return EMBED_MAG_GAP_EDGE_CONTRAST;
+  }
+
+  if (yAvg < LUMA_AVG_SHADOW_MAX) {
+    return EMBED_MAG_GAP_LUMA_EXTREME;
+  }
+
+  if (variance < BLOCK_VAR_SMOOTH_LT) {
+    return EMBED_MAG_GAP_SMOOTH;
+  }
+  return EMBED_MAG_GAP_TEXTURED;
 }
 
 function collapsedBitsAlignedForMagicHex(
@@ -684,7 +800,7 @@ function applyBlockDeltaToRgb(
 
   // Zero-tolerance: integer RGB clamp shrinks the DCT magnitude margin from the ideal IDCT delta.
   const tb = opts?.targetBit;
-  const gapT = opts?.magGapTarget ?? EMBED_MAG_GAP_TARGET_FLAT;
+  const gapT = opts?.magGapTarget ?? EMBED_MAG_GAP_LUMA_EXTREME;
   if (
     tb !== undefined &&
     readBitFromBlock(data, width, height, bx, by) === tb
@@ -979,10 +1095,7 @@ function embedBitInBlock(
   const delta = new Float32Array(64);
 
   readLumaBlockInto(data, width, height, bx, by, luma);
-  const magPrimary =
-    blockLumaPopulationVariance(luma) >= BLOCK_LUMA_VAR_THRESHOLD
-      ? EMBED_MAG_GAP_TARGET_TEXTURE
-      : EMBED_MAG_GAP_TARGET_FLAT;
+  const magPrimary = getAdaptiveMagnitude(luma);
 
   function attemptWithMagGapTarget(magGapTarget: number): boolean {
     let scale = 1;
@@ -1031,30 +1144,50 @@ function embedBitInBlock(
 
   if (attemptWithMagGapTarget(magPrimary)) return;
   pasteBlockRgb(data, width, height, bx, by, saved);
-  attemptWithMagGapTarget(EMBED_MAG_GAP_TARGET_RELAXED);
+  if (magPrimary > EMBED_MAG_GAP_RELAXED_STEP) {
+    if (attemptWithMagGapTarget(EMBED_MAG_GAP_RELAXED_STEP)) return;
+    pasteBlockRgb(data, width, height, bx, by, saved);
+  }
+  if (magPrimary > EMBED_MAG_GAP_ULTRA_RELAXED) {
+    attemptWithMagGapTarget(EMBED_MAG_GAP_ULTRA_RELAXED);
+  }
 }
 
 /**
- * Classify from signed magnitude gap `|A|−|B|` vs `EXTRACT_MAG_GAP_THRESHOLD`;
- * tie-break uses sign of gap. `invert` matches extract XOR path only.
+ * Classify signed magnitude gap vs ±`threshold` (per-block adaptive in production).
+ * Tie-break in ambiguous band uses sign of gap. `invert` matches extract XOR path only.
  */
-function magGapToBit(magGap: number, invert: boolean): number {
+function magGapToBitWithThreshold(
+  magGap: number,
+  threshold: number,
+  invert: boolean
+): number {
   let b: number;
-  if (magGap > EXTRACT_MAG_GAP_THRESHOLD) b = 1;
-  else if (magGap < -EXTRACT_MAG_GAP_THRESHOLD) b = 0;
+  if (magGap > threshold) b = 1;
+  else if (magGap < -threshold) b = 0;
   else b = magGap >= 0 ? 1 : 0;
   return invert ? b ^ 1 : b;
 }
 
-/** Extract path: same rule as `readBitFromBlock`, optional `EXTRACT_INVERT_DCT_GAP_DECODER`. */
-function decodeBitFromMidfreqGapForExtract(coeff: Float32Array): number {
-  return magGapToBit(
+/**
+ * Extract: same `getAdaptiveMagnitude` / threshold policy as embed (current pixel luma).
+ * `thresholdBias` — deep-scan only: shift detection band by ±1 vs tier default.
+ */
+function decodeBitFromMidfreqGapForExtract(
+  coeff: Float32Array,
+  luma: Float32Array,
+  thresholdBias = 0
+): number {
+  const magTarget = getAdaptiveMagnitude(luma);
+  const t = extractBitThresholdForMagTarget(magTarget, thresholdBias);
+  return magGapToBitWithThreshold(
     midfreqAbsMagGapFromCoeff(coeff),
+    t,
     EXTRACT_INVERT_DCT_GAP_DECODER
   );
 }
 
-/** Embed/verify: Steel magnitude protocol (no extract-only invert). */
+/** Embed/verify: Steel magnitude protocol; threshold tracks adaptive mag tier (matches extract). */
 function readBitFromBlock(
   data: Buffer,
   width: number,
@@ -1062,8 +1195,11 @@ function readBitFromBlock(
   bx: number,
   by: number
 ): number {
-  const coeff = dct8x8(readLumaBlock(data, width, height, bx, by));
-  return magGapToBit(midfreqAbsMagGapFromCoeff(coeff), false);
+  const luma = readLumaBlock(data, width, height, bx, by);
+  const magTarget = getAdaptiveMagnitude(luma);
+  const t = extractBitThresholdForMagTarget(magTarget, 0);
+  const coeff = dct8x8(luma);
+  return magGapToBitWithThreshold(midfreqAbsMagGapFromCoeff(coeff), t, false);
 }
 
 /**
@@ -1343,6 +1479,20 @@ function tripleExpandPayloadBits(bits: number[]): number[] {
   return out;
 }
 
+/** v4: first 32 logical bits (magic) → `2 * PHYSICAL_REDUNDANCY` physical copies each; rest → R each. */
+function tripleExpandV4PayloadBits(bits: number[]): number[] {
+  const out: number[] = [];
+  for (let i = 0; i < bits.length; i++) {
+    const b = bits[i]! & 1;
+    const r =
+      i < V4_MAGIC_HEADER_LOGICAL_BITS
+        ? 2 * PHYSICAL_REDUNDANCY
+        : PHYSICAL_REDUNDANCY;
+    for (let t = 0; t < r; t++) out.push(b);
+  }
+  return out;
+}
+
 /** Invert expand: one logical bit per `PHYSICAL_REDUNDANCY` physical slots (embed majority). */
 function collapseTriplePhysicalBits(physical: number[]): number[] | null {
   if (physical.length % PHYSICAL_REDUNDANCY !== 0) return null;
@@ -1377,6 +1527,33 @@ function collapseTriplePhysicalBitsForExtract(
   return out;
 }
 
+/** v4 extract: variable chunk size 2×R then R after first 32 logical bits recovered. */
+function collapseV4PhysicalBitsForExtract(physical: number[]): number[] | null {
+  const out: number[] = [];
+  let i = 0;
+  while (i < physical.length) {
+    const r =
+      out.length < V4_MAGIC_HEADER_LOGICAL_BITS
+        ? 2 * PHYSICAL_REDUNDANCY
+        : PHYSICAL_REDUNDANCY;
+    if (i + r > physical.length) return null;
+    const chunk = physical.slice(i, i + r);
+    out.push(logicalBitFromTripleVotesExtract(chunk));
+    i += r;
+  }
+  return out;
+}
+
+function collapsePhysicalBitsForExtract(
+  physical: number[],
+  ver: 3 | 4
+): number[] | null {
+  if (ver === 3) {
+    return collapseTriplePhysicalBitsForExtract(physical);
+  }
+  return collapseV4PhysicalBitsForExtract(physical);
+}
+
 const EMERGENCY_SUSPICIOUS_DECLARED_LEN = 100;
 const EMERGENCY_FIXED_USER_ID_LENS = [12, 16] as const;
 
@@ -1397,7 +1574,7 @@ function tryEmergencyFixedMemberLenExtract(
     if (count < Lphy) continue;
     const allBits = reconstructBigEndianBitsFromBlocks(blockBits, count, Lphy);
     if (!allBits || allBits.length !== Lphy) continue;
-    const collapsedRaw = collapseTriplePhysicalBitsForExtract(allBits);
+    const collapsedRaw = collapsePhysicalBitsForExtract(allBits, ver);
     const needCollapsed = collapsedLogicalBitCountForPayloadVersion(
       len,
       magicSkipBits,
@@ -1522,44 +1699,61 @@ function tryBlindExtractAfterMagicMarker(
   ) {
     return empty();
   }
-  const Lphy = maxPhysicalStreamBitLengthForLen(len, magicSkipBits);
-  if (count < Lphy) return empty();
-  const allBits = reconstructBigEndianBitsFromBlocks(blockBits, count, Lphy);
-  if (!allBits || allBits.length !== Lphy) return empty();
-  const collapsedRaw = collapseTriplePhysicalBitsForExtract(allBits);
-  const needCollapsed = maxCollapsedLogicalBitCountForLen(len, magicSkipBits);
-  if (!collapsedRaw || collapsedRaw.length !== needCollapsed) return empty();
-  const collapsed = applyCollapsedStreamInvert(
-    collapsedRaw,
-    streamInvertCollapsed
-  );
-  const startBit = magicSkipBits + 32;
-  if (collapsed.length < startBit + 128) return empty();
 
   const decoder = new TextDecoder("utf-8", { fatal: false });
   const previewParts: string[] = [];
 
-  for (const winBits of BLIND_AFTER_MAGIC_BIT_WINDOWS) {
-    const slice = collapsed.slice(startBit, startBit + winBits);
-    if (slice.length < winBits) continue;
-    const byteLen = winBits / 8;
-    const buf = bigEndianBitsToBuffer(slice, byteLen);
-    if (!buf) continue;
-    const raw = decoder.decode(buf);
-    const cleaned = blindExtractStripNonPrintable(raw);
-    const prevSnippet = cleaned.slice(0, 96);
-    previewParts.push(`${winBits}b:${prevSnippet}`);
-    const trimmed = cleaned.trim();
-    const alnumish = countLettersOrDigits(cleaned);
-    const longEnough = trimmed.length >= BLIND_MIN_CLEANED_LEN;
-    const alnumOk = alnumish >= BLIND_MIN_LETTER_OR_DIGIT;
-    if (longEnough || alnumOk) {
-      const userId = trimmed.length > 0 ? trimmed : raw.trim();
-      if (userId.length === 0) continue;
-      return {
-        userId,
-        blindCleanedPreview: previewParts.join(" | ").slice(0, 500),
-      };
+  for (const ver of [4, 3] as const) {
+    if (
+      collapsedLogicalBitCountForPayloadVersion(len, magicSkipBits, ver) <
+      needCollapsedLogical
+    ) {
+      continue;
+    }
+    const Lphy = physicalStreamBitLengthForPayloadVersion(
+      len,
+      magicSkipBits,
+      ver
+    );
+    if (count < Lphy) continue;
+    const allBits = reconstructBigEndianBitsFromBlocks(blockBits, count, Lphy);
+    if (!allBits || allBits.length !== Lphy) continue;
+    const collapsedRaw = collapsePhysicalBitsForExtract(allBits, ver);
+    const needCollapsed = collapsedLogicalBitCountForPayloadVersion(
+      len,
+      magicSkipBits,
+      ver
+    );
+    if (!collapsedRaw || collapsedRaw.length !== needCollapsed) continue;
+    const collapsed = applyCollapsedStreamInvert(
+      collapsedRaw,
+      streamInvertCollapsed
+    );
+    const startBit = magicSkipBits + 32;
+    if (collapsed.length < startBit + 128) continue;
+
+    for (const winBits of BLIND_AFTER_MAGIC_BIT_WINDOWS) {
+      const slice = collapsed.slice(startBit, startBit + winBits);
+      if (slice.length < winBits) continue;
+      const byteLen = winBits / 8;
+      const buf = bigEndianBitsToBuffer(slice, byteLen);
+      if (!buf) continue;
+      const raw = decoder.decode(buf);
+      const cleaned = blindExtractStripNonPrintable(raw);
+      const prevSnippet = cleaned.slice(0, 96);
+      previewParts.push(`${winBits}b:${prevSnippet}`);
+      const trimmed = cleaned.trim();
+      const alnumish = countLettersOrDigits(cleaned);
+      const longEnough = trimmed.length >= BLIND_MIN_CLEANED_LEN;
+      const alnumOk = alnumish >= BLIND_MIN_LETTER_OR_DIGIT;
+      if (longEnough || alnumOk) {
+        const userId = trimmed.length > 0 ? trimmed : raw.trim();
+        if (userId.length === 0) continue;
+        return {
+          userId,
+          blindCleanedPreview: previewParts.join(" | ").slice(0, 500),
+        };
+      }
     }
   }
 
@@ -1626,7 +1820,8 @@ export function embedMemberIdDctInBitmap(
   const idBits = payloadBufferToBigEndianBits(utf8);
   const eccBits = hamming74EncodeStream(idBits);
   const logicalBits = headerBits.concat(eccBits);
-  const expandedBits = tripleExpandPayloadBits(logicalBits);
+  assertV4MagicHeaderLogicalBitsNotDegenerate(logicalBits);
+  const expandedBits = tripleExpandV4PayloadBits(logicalBits);
   const Lphy = expandedBits.length;
   const { bw, bh, count, fullBw, fullBh } = blockGridDims(width, height);
   const sparseK = buildSparseEmbedBlockIndices(width, height, bw, bh);
@@ -1660,6 +1855,30 @@ export function embedMemberIdDct(image: BitmapLike, userId: string): void {
   );
 }
 
+function buildExtractSparseBlockBits(
+  data: Buffer,
+  width: number,
+  height: number,
+  sparseK: number[],
+  embedBlockCount: number,
+  bw: number,
+  thresholdBias: number
+): number[] {
+  const blockBits: number[] = new Array(embedBlockCount);
+  for (let i = 0; i < embedBlockCount; i++) {
+    const k = sparseK[i]!;
+    const { bx, by } = blockIndexToCoords(k, bw);
+    const luma = readLumaBlock(data, width, height, bx, by);
+    const coeff = dct8x8(luma);
+    blockBits[i] = decodeBitFromMidfreqGapForExtract(
+      coeff,
+      luma,
+      thresholdBias
+    );
+  }
+  return blockBits;
+}
+
 export function extractMemberIdDctDetailed(
   image: BitmapLike,
   _options?: { includeDebug?: boolean }
@@ -1677,17 +1896,10 @@ export function extractMemberIdDctDetailed(
   }
 
   /**
-   * Auto-align: search first ≤128 collapsed logical bits for CGW\\x03 or CGW\\x04 (raw + stream XOR).
+   * Auto-align: search collapsed logical stream for CGW\\x03 or CGW\\x04 (raw + stream XOR).
    * `magicSkipBits` + `streamInvertCollapsed` are the production settings for this image.
    */
-  const blockBits: number[] = new Array(embedBlockCount);
-  for (let i = 0; i < embedBlockCount; i++) {
-    const k = sparseK[i]!;
-    const { bx, by } = blockIndexToCoords(k, bw);
-    const coeff = dct8x8(readLumaBlock(data, width, height, bx, by));
-    blockBits[i] = decodeBitFromMidfreqGapForExtract(coeff);
-  }
-
+  function runExtractWithBlockBits(blockBits: number[]): WatermarkExtractResult {
   let magicSkipBits = EXTRACT_COLLAPSED_LEADING_SKIP_FALLBACK;
   let streamInvertCollapsed = false;
 
@@ -1696,33 +1908,43 @@ export function extractMemberIdDctDetailed(
     auditCollapsedLen1: number[] | null;
     auditCollapsedLen10: number[] | null;
   } {
-    const Lphy1 = maxPhysicalStreamBitLengthForLen(1, skip);
-    const Lphy10 = maxPhysicalStreamBitLengthForLen(10, skip);
     let auditPhysicalLen1: number[] | null = null;
     let auditCollapsedLen1: number[] | null = null;
     let auditCollapsedLen10: number[] | null = null;
-    if (embedBlockCount >= Lphy1) {
-      auditPhysicalLen1 = reconstructBigEndianBitsFromBlocks(
+
+    for (const ver of [4, 3] as const) {
+      const Lphy1 = physicalStreamBitLengthForPayloadVersion(1, skip, ver);
+      if (embedBlockCount < Lphy1) continue;
+      const p1 = reconstructBigEndianBitsFromBlocks(
         blockBits,
         embedBlockCount,
         Lphy1
       );
-      if (auditPhysicalLen1) {
-        auditCollapsedLen1 = collapseTriplePhysicalBitsForExtract(
-          auditPhysicalLen1
-        );
-      }
+      if (!p1 || p1.length !== Lphy1) continue;
+      const c1 = collapsePhysicalBitsForExtract(p1, ver);
+      const need1 = collapsedLogicalBitCountForPayloadVersion(1, skip, ver);
+      if (!c1 || c1.length !== need1) continue;
+      auditPhysicalLen1 = p1;
+      auditCollapsedLen1 = c1;
+      break;
     }
-    if (embedBlockCount >= Lphy10) {
+
+    for (const ver of [4, 3] as const) {
+      const Lphy10 = physicalStreamBitLengthForPayloadVersion(10, skip, ver);
+      if (embedBlockCount < Lphy10) continue;
       const p10 = reconstructBigEndianBitsFromBlocks(
         blockBits,
         embedBlockCount,
         Lphy10
       );
-      if (p10) {
-        auditCollapsedLen10 = collapseTriplePhysicalBitsForExtract(p10);
-      }
+      if (!p10 || p10.length !== Lphy10) continue;
+      const c10 = collapsePhysicalBitsForExtract(p10, ver);
+      const need10 = collapsedLogicalBitCountForPayloadVersion(10, skip, ver);
+      if (!c10 || c10.length !== need10) continue;
+      auditCollapsedLen10 = c10;
+      break;
     }
+
     return {
       auditPhysicalLen1,
       auditCollapsedLen1,
@@ -1835,7 +2057,7 @@ export function extractMemberIdDctDetailed(
         continue;
       }
 
-      const collapsedRaw = collapseTriplePhysicalBitsForExtract(allBits);
+      const collapsedRaw = collapsePhysicalBitsForExtract(allBits, ver);
       const needCollapsed = collapsedLogicalBitCountForPayloadVersion(
         len,
         magicSkipBits,
@@ -2221,6 +2443,42 @@ export function extractMemberIdDctDetailed(
     debug: debugData,
     debugSnapshot,
   };
+  }
+
+  const primary = runExtractWithBlockBits(
+    buildExtractSparseBlockBits(
+      data,
+      width,
+      height,
+      sparseK,
+      embedBlockCount,
+      bw,
+      0
+    )
+  );
+  if (primary.ok) return primary;
+  if (primary.code !== "magic_missing") return primary;
+
+  const deepBh = primary.debugSnapshot?.bestHamming;
+  if (deepBh !== undefined && deepBh >= 10 && deepBh <= 15) {
+    // bias -1 → can reach threshold 0 when base t ≤ 1 (e.g. ramp mag ≈ 3).
+    for (const bias of [-1, 1] as const) {
+      const alt = buildExtractSparseBlockBits(
+        data,
+        width,
+        height,
+        sparseK,
+        embedBlockCount,
+        bw,
+        bias
+      );
+      const r = runExtractWithBlockBits(alt);
+      if (r.ok) return r;
+      if (r.code !== "magic_missing") return r;
+    }
+  }
+
+  return primary;
 }
 
 void (function assertBigEndianBitsRoundTrip(): void {
@@ -2249,10 +2507,22 @@ void (function assertBigEndianBitsRoundTrip(): void {
     }
   }
   const bitsV4 = payloadBufferToBigEndianBits(WATERMARK_MAGIC_V4.subarray(0, 4));
+  assertV4MagicHeaderLogicalBitsNotDegenerate(bitsV4);
   const packedV4 = bigEndianBitsToBuffer(bitsV4, 4);
   if (!packedV4 || !packedV4.equals(WATERMARK_MAGIC_V4.subarray(0, 4))) {
     throw new Error(
       "Creator Guard DCT: big-endian round-trip failed for CGW\\x04"
+    );
+  }
+  const expandedV4Magic = tripleExpandV4PayloadBits(bitsV4);
+  const collapsedV4Magic = collapseV4PhysicalBitsForExtract(expandedV4Magic);
+  if (
+    !collapsedV4Magic ||
+    collapsedV4Magic.length !== bitsV4.length ||
+    collapsedV4Magic.join("") !== bitsV4.join("")
+  ) {
+    throw new Error(
+      "Creator Guard DCT: v4 magic-header double redundancy expand/collapse must preserve logical bits"
     );
   }
 })();

@@ -15,9 +15,17 @@ export const runtime = "nodejs";
 
 const MAX_REMOTE_IMAGE_BYTES = 25 * 1024 * 1024;
 
-/** Emergency cap for Vercel Hobby — ~600px wide max before DCT (success over resolution). */
-const PROTECT_MAX_WIDTH_BEFORE_DOWNSCALE = 600;
-const PROTECT_DOWNSCALE_TARGET_WIDTH = 600;
+/**
+ * Only downscale when wider than this (full-res through DCT for typical photos).
+ * Frontend sends the original `File` bytes; this is the main server-side resize.
+ */
+const PROTECT_MAX_WIDTH_BEFORE_DOWNSCALE = 8192;
+const PROTECT_DOWNSCALE_TARGET_WIDTH = 8192;
+
+/**
+ * Final encode is **lossless PNG** (no JPEG quality knob on this path). Input JPEGs are decoded at full fidelity by Sharp/libvips.
+ * If you re-save the download as JPEG elsewhere, use **quality ≥ 95** and **4:4:4** chroma when your encoder supports it.
+ */
 
 /** Faster JPEG/TIFF decode; avoid random access when possible. */
 const SHARP_DECODE_OPTIONS = { sequentialRead: true } as const;
@@ -108,26 +116,23 @@ function safeDownloadBaseName(id: string): string {
   return (s.length > 0 ? s : "watermark").slice(0, 120);
 }
 
-async function respondProtectedPng(
+async function respondProtectedImage(
   input: Buffer,
   embeddedId: string,
   idSource: EmbedIdSource,
   opts?: { forceDownload?: boolean }
 ): Promise<NextResponse> {
+  console.log("!!! EXECUTING V4.9 PURE PIPELINE !!!");
   try {
     const { data, width, height } = await decodeResizeToRgba(input);
 
     embedMemberIdDctInBitmap(data, width, height, embeddedId);
 
-    data[0] = 255;
-    data[1] = 0;
-    data[2] = 0;
-    data[3] = 255;
     const body = await sharp(data, {
       raw: { width, height, channels: 4 },
     })
       .png({
-        compressionLevel: 3,
+        compressionLevel: 6,
         adaptiveFiltering: false,
       })
       .toBuffer();
@@ -137,6 +142,7 @@ async function respondProtectedPng(
       "X-Content-Type-Options": "nosniff",
       "Cache-Control": "no-cache",
       "X-Creator-Guard-Embed-Source": idSource,
+      "X-Creator-Guard-Version": "V4.9-PURE-PIPELINE-001",
     };
     if (opts?.forceDownload) {
       const baseName = safeDownloadBaseName(embeddedId);
@@ -178,6 +184,7 @@ function formUploadLooksLikeImage(file: File): boolean {
 }
 
 export async function POST(request: NextRequest) {
+  throw new Error("STARK_V5_ACTIVE");
   let formData: FormData;
   try {
     formData = await request.formData();
@@ -188,13 +195,19 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const file = formData.get("file");
-  if (!file || !(file instanceof File)) {
+  const memberTrimmed = String(formData.get("memberId") ?? "").trim();
+  const userTrimmed =
+    String(formData.get("userId") ?? "").trim() || "fallback_user";
+  console.log("!!! PROTECT_API_START !!!", { userId: userTrimmed });
+
+  const fileField = formData.get("file");
+  if (!fileField || !(fileField instanceof File)) {
     return NextResponse.json(
       { error: "Missing file", message: "Form field `file` must be an image." },
       { status: 400 }
     );
   }
+  const file = fileField as File;
 
   if (!formUploadLooksLikeImage(file)) {
     return NextResponse.json(
@@ -221,17 +234,6 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const memberTrimmed = String(formData.get("memberId") ?? "").trim();
-  const userTrimmed = String(formData.get("userId") ?? "").trim();
-  if (!memberTrimmed && !userTrimmed) {
-    return NextResponse.json(
-      {
-        error: "Missing memberId",
-        message: "Form field `memberId` (or `userId`) is required.",
-      },
-      { status: 400 }
-    );
-  }
   const { embeddedId, idSource: baseSource } = resolveEmbeddedId(
     memberTrimmed,
     userTrimmed
@@ -246,7 +248,7 @@ export async function POST(request: NextRequest) {
     userId: userTrimmed || "(empty)",
   });
 
-  return respondProtectedPng(input, embeddedId, idSource, {
+  return respondProtectedImage(input, embeddedId, idSource, {
     forceDownload: true,
   });
 }
@@ -334,5 +336,5 @@ export async function GET(request: NextRequest) {
     );
   }
 
-  return respondProtectedPng(input, embeddedId, idSource);
+  return respondProtectedImage(input, embeddedId, idSource);
 }

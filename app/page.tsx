@@ -495,8 +495,11 @@ export default function Home() {
     setQuickTestPhase("working");
     try {
       const fd = new FormData();
+      // Raw `File` from the input — no canvas resize/re-encode before upload.
       fd.set("file", quickTestFile);
       fd.set("memberId", mid);
+      // Always send `userId` so POST /api/protect never treats the stream as anonymous (logs + resolveEmbeddedId).
+      fd.set("userId", mid || "debug_user_001");
       console.log("Sending request...");
       let res: Response;
       try {
@@ -538,7 +541,12 @@ export default function Home() {
         setQuickTestPhase("idle");
         return;
       }
-      if (!ct.includes("png") && !ct.includes("octet-stream")) {
+      if (
+        !ct.includes("png") &&
+        !ct.includes("jpeg") &&
+        !ct.includes("jpg") &&
+        !ct.includes("octet-stream")
+      ) {
         const data = (await res.json().catch(() => ({}))) as {
           message?: string;
         };
@@ -555,7 +563,9 @@ export default function Home() {
       a.href = url;
       const safe =
         mid.replace(/[^a-zA-Z0-9._-]+/g, "_").slice(0, 120) || "watermark";
-      a.download = `creator-guard-${safe}.png`;
+      const ext =
+        ct.includes("png") ? "png" : ct.includes("jpeg") || ct.includes("jpg") ? "jpg" : "bin";
+      a.download = `creator-guard-${safe}.${ext}`;
       document.body.appendChild(a);
       a.click();
       a.remove();
