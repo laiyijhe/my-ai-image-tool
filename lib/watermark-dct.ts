@@ -32,7 +32,7 @@ export interface WatermarkVerifyExtractDebug {
 
 /**
  * Creator Guard — DCT v3 (production)
- * Cyclic 8×8 blocks, integer BT.601 luma, Steel DCT (1,2) vs (2,1), 5× redundancy, magnitude gap decode.
+ * Cyclic 8×8 blocks, integer BT.601 luma, Steel DCT (1,2) vs (2,1), 9× redundancy, magnitude gap decode.
  */
 export const WATERMARK_MAGIC_V3 = Buffer.from([0x43, 0x47, 0x57, 0x03]);
 
@@ -50,6 +50,9 @@ export class WatermarkEmbedCapacityError extends Error {
 }
 
 const MAX_USER_ID_BYTES = 256;
+
+/** Reject very short bitmaps before DCT work (e.g. after API downscale). */
+const MIN_EMBED_HEIGHT_PX = 200;
 
 /**
  * Mid-frequency AC pair — **Steel mode**: (u,v) = (1,2) vs (2,1), more robust to JPEG quant.
@@ -83,7 +86,7 @@ const EXTRACT_MAG_GAP_THRESHOLD = 5;
 const EXTRACT_TRIPLE_REQUIRE_UNANIMOUS_FOR_ONE = true;
 
 /** One logical payload bit → `PHYSICAL_REDUNDANCY` identical physical slots (cyclic across blocks). */
-const PHYSICAL_REDUNDANCY = 5;
+const PHYSICAL_REDUNDANCY = 9;
 
 /**
  * Fallback collapsed-skip if brute-force scan (start indices 0..`MAGIC_BRUTE_FORCE_MAX_START_BIT`)
@@ -388,42 +391,45 @@ function enforceBitmapOpaque(data: Buffer, width: number, height: number): void 
   }
 }
 
-function dct8x8(pixels: Float64Array): Float64Array {
-  const out = new Float64Array(64);
+const DCT_INV_SQRT2 = 1 / Math.SQRT2;
+/** `cos((2*x+1)*u*π/16)` for `x,u ∈ [0,7]` — index `x * 8 + u` (avoids `Math.cos` in hot loops). */
+const DCT_COS_XU = new Float32Array(64);
+for (let x = 0; x < 8; x++) {
   for (let u = 0; u < 8; u++) {
+    DCT_COS_XU[x * 8 + u] = Math.cos(((2 * x + 1) * u * Math.PI) / 16);
+  }
+}
+
+function dct8x8(pixels: Float32Array): Float32Array {
+  const out = new Float32Array(64);
+  for (let u = 0; u < 8; u++) {
+    const cu = u === 0 ? DCT_INV_SQRT2 : 1;
     for (let v = 0; v < 8; v++) {
+      const cv = v === 0 ? DCT_INV_SQRT2 : 1;
       let sum = 0;
       for (let x = 0; x < 8; x++) {
+        const cx = DCT_COS_XU[x * 8 + u]!;
         for (let y = 0; y < 8; y++) {
-          sum +=
-            pixels[x * 8 + y]! *
-            Math.cos(((2 * x + 1) * u * Math.PI) / 16) *
-            Math.cos(((2 * y + 1) * v * Math.PI) / 16);
+          sum += pixels[x * 8 + y]! * cx * DCT_COS_XU[y * 8 + v]!;
         }
       }
-      const cu = u === 0 ? 1 / Math.SQRT2 : 1;
-      const cv = v === 0 ? 1 / Math.SQRT2 : 1;
       out[u * 8 + v] = 0.25 * cu * cv * sum;
     }
   }
   return out;
 }
 
-function idct8x8(coeffs: Float64Array): Float64Array {
-  const out = new Float64Array(64);
+function idct8x8(coeffs: Float32Array): Float32Array {
+  const out = new Float32Array(64);
   for (let x = 0; x < 8; x++) {
     for (let y = 0; y < 8; y++) {
       let sum = 0;
       for (let u = 0; u < 8; u++) {
+        const cu = u === 0 ? DCT_INV_SQRT2 : 1;
+        const cux = DCT_COS_XU[x * 8 + u]!;
         for (let v = 0; v < 8; v++) {
-          const cu = u === 0 ? 1 / Math.SQRT2 : 1;
-          const cv = v === 0 ? 1 / Math.SQRT2 : 1;
-          sum +=
-            cu *
-            cv *
-            coeffs[u * 8 + v]! *
-            Math.cos(((2 * x + 1) * u * Math.PI) / 16) *
-            Math.cos(((2 * y + 1) * v * Math.PI) / 16);
+          const cv = v === 0 ? DCT_INV_SQRT2 : 1;
+          sum += cu * cv * coeffs[u * 8 + v]! * cux * DCT_COS_XU[y * 8 + v]!;
         }
       }
       out[x * 8 + y] = 0.25 * sum;
@@ -452,8 +458,8 @@ function readLumaBlock(
   height: number,
   bx: number,
   by: number
-): Float64Array {
-  const p = new Float64Array(64);
+): Float32Array {
+  const p = new Float32Array(64);
   let i = 0;
   for (let dx = 0; dx < 8; dx++) {
     for (let dy = 0; dy < 8; dy++) {
@@ -476,7 +482,7 @@ function applyBlockDeltaToRgb(
   height: number,
   bx: number,
   by: number,
-  delta: Float64Array,
+  delta: Float32Array,
   opts?: { targetBit?: number; magGapTarget?: number }
 ): void {
   let i = 0;
@@ -603,7 +609,7 @@ function bumpBlockRgbUniform(
 }
 
 /** Signed `|coeff[COEFF_A]| − |coeff[COEFF_B]|` (Steel read/embed classification). */
-function midfreqAbsMagGapFromCoeff(coeff: Float64Array): number {
+function midfreqAbsMagGapFromCoeff(coeff: Float32Array): number {
   return Math.abs(coeff[COEFF_A]!) - Math.abs(coeff[COEFF_B]!);
 }
 
@@ -767,7 +773,7 @@ function embedBitInBlock(
         coeff[COEFF_B] = b + mag;
       }
       const newLuma = idct8x8(coeff);
-      const d = new Float64Array(64);
+      const d = new Float32Array(64);
       for (let i = 0; i < 64; i++) d[i] = newLuma[i]! - luma[i]!;
       applyBlockDeltaToRgb(data, width, height, bx, by, d, {
         targetBit: bit,
@@ -811,7 +817,7 @@ function magGapToBit(magGap: number, invert: boolean): number {
 }
 
 /** Extract path: same rule as `readBitFromBlock`, optional `EXTRACT_INVERT_DCT_GAP_DECODER`. */
-function decodeBitFromMidfreqGapForExtract(coeff: Float64Array): number {
+function decodeBitFromMidfreqGapForExtract(coeff: Float32Array): number {
   return magGapToBit(
     midfreqAbsMagGapFromCoeff(coeff),
     EXTRACT_INVERT_DCT_GAP_DECODER
@@ -1318,6 +1324,16 @@ function reconstructBigEndianBitsFromBlocks(
 export function embedMemberIdDct(image: BitmapLike, userId: string): void {
   flattenBitmapToOpaqueRgb(image.bitmap);
 
+  const { width, height } = image.bitmap;
+  if (height < MIN_EMBED_HEIGHT_PX) {
+    const { count } = blockGridDims(width, height);
+    throw new WatermarkEmbedCapacityError(
+      `Image height too small for DCT watermark: need at least ${MIN_EMBED_HEIGHT_PX}px, have ${height}px`,
+      1,
+      count
+    );
+  }
+
   const utf8 = Buffer.from(userId, "utf8");
   if (utf8.length > MAX_USER_ID_BYTES) {
     throw new Error("Member ID too long for DCT watermark");
@@ -1330,7 +1346,7 @@ export function embedMemberIdDct(image: BitmapLike, userId: string): void {
   const payloadBits = payloadBufferToBigEndianBits(payload);
   const expandedBits = tripleExpandPayloadBits(payloadBits);
   const Lphy = expandedBits.length;
-  const { data, width, height } = image.bitmap;
+  const { data } = image.bitmap;
   const { bw, bh, count, fullBw, fullBh } = blockGridDims(width, height);
 
   if (count < Lphy) {

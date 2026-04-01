@@ -1,8 +1,7 @@
 import { Buffer } from "node:buffer";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { Jimp, JimpMime } from "jimp";
-import { PNGColorType, PNGFilterType } from "@jimp/js-png";
+import sharp from "sharp";
 import { isAllowedProtectSourceUrl } from "@/lib/protect-source-url";
 import {
   embedMemberIdDct,
@@ -10,27 +9,58 @@ import {
 } from "@/lib/watermark-dct";
 import { type NextRequest, NextResponse } from "next/server";
 
+export const maxDuration = 60;
+
 export const runtime = "nodejs";
 
 const MAX_REMOTE_IMAGE_BYTES = 25 * 1024 * 1024;
 
-/** Wide images blow interior 8×8 block count and risk serverless timeouts; shrink before DCT embed. */
-const PROTECT_MAX_WIDTH_BEFORE_DOWNSCALE = 800;
-const PROTECT_DOWNSCALE_TARGET_WIDTH = 800;
+/** Downscale wide inputs before DCT (Sharp is fast; cap width for predictable latency). */
+const PROTECT_MAX_WIDTH_BEFORE_DOWNSCALE = 1600;
+const PROTECT_DOWNSCALE_TARGET_WIDTH = 1600;
 
 const PUBLIC_REL = join("public", "test.jpg");
 
 type EmbedIdSource = "memberId" | "userId" | "test_error_fallback" | "form_upload";
 
-async function loadBaseJimp(
+/** Decode image to RGBA; downscale if wider than threshold (matches prior Jimp + DCT pipeline). */
+async function decodeResizeToRgba(
+  input: Buffer
+): Promise<{ data: Buffer; width: number; height: number }> {
+  const meta = await sharp(input).metadata();
+  const w0 = meta.width ?? 0;
+  const h0 = meta.height ?? 1;
+
+  let pipeline = sharp(input).ensureAlpha();
+
+  if (w0 > PROTECT_MAX_WIDTH_BEFORE_DOWNSCALE) {
+    const tw = PROTECT_DOWNSCALE_TARGET_WIDTH;
+    const th = Math.max(1, Math.round((h0 * tw) / w0));
+    pipeline = pipeline.resize(tw, th, { fit: "fill" });
+  }
+
+  const { data, info } = await pipeline.raw().toBuffer({ resolveWithObject: true });
+
+  if (info.channels !== 4) {
+    throw new Error("Expected RGBA from Sharp decode");
+  }
+
+  return {
+    data: Buffer.from(data),
+    width: info.width,
+    height: info.height,
+  };
+}
+
+async function loadDefaultImageBufferForRequest(
   request: NextRequest
-): Promise<Awaited<ReturnType<typeof Jimp.read>> | null> {
+): Promise<Buffer | null> {
   const localPath = join(process.cwd(), PUBLIC_REL);
   if (existsSync(localPath)) {
     try {
-      return await Jimp.read(localPath);
+      return readFileSync(localPath);
     } catch {
-      return null;
+      /* fall through */
     }
   }
 
@@ -38,8 +68,7 @@ async function loadBaseJimp(
   try {
     const res = await fetch(url, { cache: "no-store" });
     if (!res.ok) return null;
-    const ab = await res.arrayBuffer();
-    return await Jimp.read(Buffer.from(ab));
+    return Buffer.from(await res.arrayBuffer());
   } catch {
     return null;
   }
@@ -48,10 +77,6 @@ async function loadBaseJimp(
 /** When no query id is present — proves new protect route is live vs legacy `unknown` default. */
 const FALLBACK_NO_ID = "TEST_ERROR_ID";
 
-/**
- * Read search params from both `nextUrl` and full `request.url` (some proxies / rewrites
- * have been seen to affect one path; values should match when both are present).
- */
 function pickSearchParam(request: NextRequest, key: string): string {
   const fromNext = request.nextUrl.searchParams.get(key);
   const fromFull = new URL(request.url).searchParams.get(key);
@@ -77,25 +102,15 @@ function safeDownloadBaseName(id: string): string {
   return (s.length > 0 ? s : "watermark").slice(0, 120);
 }
 
-/**
- * Clone, optional downscale, DCT embed, encode PNG — returns binary response or JSON error.
- * `forceDownload` adds `Content-Disposition: attachment` (POST quick test); GET stays inline-friendly.
- */
 async function respondProtectedPng(
-  base: Awaited<ReturnType<typeof Jimp.read>>,
+  input: Buffer,
   embeddedId: string,
   idSource: EmbedIdSource,
   opts?: { forceDownload?: boolean }
 ): Promise<NextResponse> {
   try {
-    const image = base.clone();
-    const w0 = image.width;
-    if (w0 > PROTECT_MAX_WIDTH_BEFORE_DOWNSCALE) {
-      const h0 = image.height;
-      const tw = PROTECT_DOWNSCALE_TARGET_WIDTH;
-      const th = Math.max(1, Math.round((h0 * tw) / w0));
-      image.resize({ w: tw, h: th });
-    }
+    const bitmap = await decodeResizeToRgba(input);
+    const image = { bitmap };
 
     embedMemberIdDct(image, embeddedId);
 
@@ -107,16 +122,15 @@ async function respondProtectedPng(
       data[3] = 255;
     }
 
-    /** JPEG-oriented hook; no-op for PNG pipeline but kept for future / mixed formats. */
-    (image as unknown as { quality?: (n: number) => void }).quality?.(70);
-
-    const buf = await image.getBuffer(JimpMime.png, {
-      colorType: PNGColorType.COLOR,
-      filterType: PNGFilterType.NONE,
-      /** Lower zlib level = faster encode, slightly larger files (still lossless). */
-      deflateLevel: 3,
-    });
-    const body: Buffer = Buffer.isBuffer(buf) ? buf : Buffer.from(buf);
+    const { data, width, height } = image.bitmap;
+    const body = await sharp(data, {
+      raw: { width, height, channels: 4 },
+    })
+      .png({
+        compressionLevel: 4,
+        effort: 4,
+      })
+      .toBuffer();
 
     const headers: Record<string, string> = {
       "Content-Type": "image/png",
@@ -193,12 +207,11 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Image too large" }, { status: 413 });
   }
 
-  let base: Awaited<ReturnType<typeof Jimp.read>>;
+  let input: Buffer;
   try {
-    const ab = await file.arrayBuffer();
-    base = await Jimp.read(Buffer.from(ab));
+    input = Buffer.from(await file.arrayBuffer());
   } catch (err) {
-    console.error("[Creator Guard protect] POST decode failed:", err);
+    console.error("[Creator Guard protect] POST read failed:", err);
     return NextResponse.json(
       {
         error: "Decode failed",
@@ -233,7 +246,7 @@ export async function POST(request: NextRequest) {
     userId: userTrimmed || "(empty)",
   });
 
-  return respondProtectedPng(base, embeddedId, idSource, {
+  return respondProtectedPng(input, embeddedId, idSource, {
     forceDownload: true,
   });
 }
@@ -260,7 +273,7 @@ export async function GET(request: NextRequest) {
   );
 
   const imageUrlParam = pickSearchParam(request, "imageUrl");
-  let base: Awaited<ReturnType<typeof Jimp.read>> | null = null;
+  let input: Buffer | null = null;
 
   if (imageUrlParam) {
     const imageUrl = imageUrlParam;
@@ -295,7 +308,7 @@ export async function GET(request: NextRequest) {
           { status: 413 }
         );
       }
-      base = await Jimp.read(Buffer.from(ab));
+      input = Buffer.from(ab);
     } catch (err) {
       console.error("[Creator Guard protect] remote image failed:", err);
       return NextResponse.json(
@@ -307,10 +320,10 @@ export async function GET(request: NextRequest) {
       );
     }
   } else {
-    base = await loadBaseJimp(request);
+    input = await loadDefaultImageBufferForRequest(request);
   }
 
-  if (!base) {
+  if (!input) {
     return NextResponse.json(
       {
         error: "Image not found",
@@ -321,5 +334,5 @@ export async function GET(request: NextRequest) {
     );
   }
 
-  return respondProtectedPng(base, embeddedId, idSource);
+  return respondProtectedPng(input, embeddedId, idSource);
 }
