@@ -71,11 +71,11 @@ const EMBED_SCALE_GROWTH = 1.12;
 
 /**
  * Embed (Steel): **magnitude** separation `|DCT(COEFF_A)| − |DCT(COEFF_B)|`.
- * **Texture-adaptive** primary target: flat blocks **13** (12–15 band); detailed blocks **25**.
+ * **Texture-adaptive** primary target: flat blocks **13** (12–15 band); detailed blocks **28** (720p embed).
  * Relaxed fallback **10** if clamp starves margin.
  */
 const EMBED_MAG_GAP_TARGET_FLAT = 13;
-const EMBED_MAG_GAP_TARGET_TEXTURE = 25;
+const EMBED_MAG_GAP_TARGET_TEXTURE = 28;
 const EMBED_MAG_GAP_TARGET_RELAXED = 10;
 /** Population variance of 8×8 luma (0–255); at/above → texture strength. */
 const BLOCK_LUMA_VAR_THRESHOLD = 120;
@@ -83,7 +83,7 @@ const BLOCK_LUMA_VAR_THRESHOLD = 120;
 const GAP_ENFORCE_MAX_STEPS = 192;
 
 /**
- * Read/extract: `|COEFF_A| − |COEFF_B|` vs this (embed uses 13/25 or 10 on disk).
+ * Read/extract: `|COEFF_A| − |COEFF_B|` vs this (embed uses 13/28 or 10 on disk).
  */
 const EXTRACT_MAG_GAP_THRESHOLD = 6;
 

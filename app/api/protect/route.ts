@@ -15,9 +15,9 @@ export const runtime = "nodejs";
 
 const MAX_REMOTE_IMAGE_BYTES = 25 * 1024 * 1024;
 
-/** Downscale wide inputs before DCT (Sharp is fast; cap width for predictable latency). */
-const PROTECT_MAX_WIDTH_BEFORE_DOWNSCALE = 1600;
-const PROTECT_DOWNSCALE_TARGET_WIDTH = 1600;
+/** Prioritize finishing under serverless limits; ~720px wide max before DCT. */
+const PROTECT_MAX_WIDTH_BEFORE_DOWNSCALE = 720;
+const PROTECT_DOWNSCALE_TARGET_WIDTH = 720;
 
 const PUBLIC_REL = join("public", "test.jpg");
 
@@ -121,8 +121,8 @@ async function respondProtectedPng(
       raw: { width, height, channels: 4 },
     })
       .png({
-        compressionLevel: 4,
-        effort: 4,
+        compressionLevel: 3,
+        adaptiveFiltering: false,
       })
       .toBuffer();
 
