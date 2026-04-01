@@ -87,6 +87,7 @@ export type Messages = {
   quickTestNeedMember: string;
   quickTestFailed: string;
   quickTestWorking: string;
+  quickTestProcessingWait: string;
   /** Apple-style dashboard tabs + toasts */
   tabQuickShield: string;
   tabMassDelivery: string;
