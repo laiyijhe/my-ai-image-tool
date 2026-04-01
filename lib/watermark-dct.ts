@@ -77,20 +77,21 @@ const EMBED_SCALE_GROWTH = 1.12;
  */
 /** Below this mean luma → shadow protection mag **8**. */
 const LUMA_AVG_SHADOW_MAX = 40;
-/** Ramp luma anchor (mag **8** at **Y → 140⁺**); blocks with **`yAvg >` this** take the ramp before variance tiering. */
+/** Blocks with **`yAvg >` this** use the bright luma ramp (before variance tiering when **`variance ≤ 500`**). */
 const BRIGHT_RAMP_Y_LO = 140;
-/** Inclusive high end of ramp; **`Y >` this** → flat absolute stealth **3**. */
+/** End of linear segment; **`Y >` this** → flat **pure white** mag (**2**). */
 const BRIGHT_RAMP_Y_HI = 250;
+/** Mag at **`Y` just above `BRIGHT_RAMP_Y_LO`** (top of linen / light ramp). */
+const BRIGHT_RAMP_MAG_TOP = 6;
 /** Smooth vs textured split (population variance of 8×8 BT.601 luma). */
 const BLOCK_VAR_SMOOTH_LT = 100;
 /** Above this variance → high-contrast edge (e.g. logo boundary). On **`Y > 140`** blocks, linen/texture must stay below this to use the bright ramp only. */
 const BLOCK_VAR_HIGH_CONTRAST_GT = 500;
 
 /**
- * Near-white blocks: smallest practical gap for stealth (prioritize invisibility over BER).
- * Expect higher bit errors on flat white; 10× physical redundancy on the magic header absorbs much of it.
+ * Pure white / **`Y > 250`** (non-edge): minimum practical gap; 10× redundancy on magic absorbs BER cost.
  */
-const EMBED_MAG_GAP_NEAR_WHITE = 3;
+const EMBED_MAG_GAP_PURE_WHITE = 2;
 const EMBED_MAG_GAP_LUMA_EXTREME = 8;
 /** Skin / flat mid-luma smooth tier (was 10). */
 const EMBED_MAG_GAP_SMOOTH = 8;
@@ -106,7 +107,7 @@ const GAP_ENFORCE_MAX_STEPS = 192;
 
 /**
  * Signed gap `|A|−|B|` vs ±threshold for bit 1 / 0; tie band uses sign of gap.
- * **`magTarget < 8`** (e.g. ramp **3–7**) → **1**; **`8 ≤ magTarget < 14`** → **2** (covers ramp top **8**).
+ * **`magTarget < 8`** (e.g. gold ramp **2–6**) → **1**; **`8 ≤ magTarget < 14`** → **2**.
  * **`≥14`** → **3**, **`≥18`** → **5** (textured **20** / edge **25**). Deep-scan **`bias -1`** can reach **0** when base **t === 1**.
  */
 export function extractBitThresholdForMagTarget(
@@ -521,8 +522,8 @@ function sliceCollapsedHeaderAndEccV4(
 
 /**
  * Per-block perceptual magnitude target (DCT gap).
- * **V4.8 luma ramp (140–250):** if **`yAvg > 140`** and **`variance ≤ 500`**, mag is **only** the bright ramp **[3, 8]** (then **`Y > 250` → 3**).
- * If **`yAvg > 140`** and **`variance > 500`**, **25** (edge). For **`yAvg ≤ 140`**: **`variance > 500` → 25**; **`Y < 40` → 8**; else **smooth 8 / textured 20**.
+ * **V5.2 gold ramp:** if **`yAvg > 140`** and **`variance ≤ 500`**: **`mag = round(6 - (yAvg - 140) × (4/110))`** clamped to **[2, 6]** on **(140, 250]**; **`Y > 250` → 2**.
+ * If **`yAvg > 140`** and **`variance > 500`**, **25** (logo edges). For **`yAvg ≤ 140`**: **`variance > 500` → 25**; **`Y < 40` → 8**; else **smooth 8 / textured 20**.
  * Independent of embedded **Member ID** / **userId** — uses only the 8×8 luma block.
  */
 export function getAdaptiveMagnitude(luma: Float32Array): number {
@@ -542,17 +543,18 @@ export function getAdaptiveMagnitude(luma: Float32Array): number {
       return EMBED_MAG_GAP_EDGE_CONTRAST;
     }
     if (yAvg > BRIGHT_RAMP_Y_HI) {
-      return EMBED_MAG_GAP_NEAR_WHITE;
+      return EMBED_MAG_GAP_PURE_WHITE;
     }
-    const span = BRIGHT_RAMP_Y_HI - BRIGHT_RAMP_Y_LO;
+    // mag = 6 - (yAvg - 140) * (4/110); span 250-140 = 110, drop 6-2 = 4
     const ramp = Math.round(
-      EMBED_MAG_GAP_LUMA_EXTREME -
-        ((yAvg - BRIGHT_RAMP_Y_LO) / span) *
-          (EMBED_MAG_GAP_LUMA_EXTREME - EMBED_MAG_GAP_NEAR_WHITE)
+      BRIGHT_RAMP_MAG_TOP -
+        (yAvg - BRIGHT_RAMP_Y_LO) *
+          ((BRIGHT_RAMP_MAG_TOP - EMBED_MAG_GAP_PURE_WHITE) /
+            (BRIGHT_RAMP_Y_HI - BRIGHT_RAMP_Y_LO))
     );
     return Math.min(
-      Math.max(ramp, EMBED_MAG_GAP_NEAR_WHITE),
-      EMBED_MAG_GAP_LUMA_EXTREME
+      Math.max(ramp, EMBED_MAG_GAP_PURE_WHITE),
+      BRIGHT_RAMP_MAG_TOP
     );
   }
 

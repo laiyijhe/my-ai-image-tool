@@ -500,7 +500,6 @@ export default function Home() {
       fd.set("memberId", mid);
       // Always send `userId` so POST /api/protect never treats the stream as anonymous (logs + resolveEmbeddedId).
       fd.set("userId", mid || "debug_user_001");
-      console.log("Sending request...");
       let res: Response;
       try {
         res = await fetch("/api/protect", {
@@ -517,7 +516,6 @@ export default function Home() {
         setQuickTestPhase("idle");
         return;
       }
-      console.log("Received response...");
       const ct = (res.headers.get("content-type") ?? "").toLowerCase();
       if (!res.ok) {
         const data = (await res.json().catch(() => ({}))) as {

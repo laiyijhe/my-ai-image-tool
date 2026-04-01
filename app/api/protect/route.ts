@@ -16,11 +16,9 @@ export const runtime = "nodejs";
 const MAX_REMOTE_IMAGE_BYTES = 25 * 1024 * 1024;
 
 /**
- * Only downscale when wider than this (full-res through DCT for typical photos).
- * Frontend sends the original `File` bytes; this is the main server-side resize.
+ * 1:1 pipeline: no resize while **max(width,height) ≤** this (e.g. **~2000px** assets unchanged).
  */
-const PROTECT_MAX_WIDTH_BEFORE_DOWNSCALE = 8192;
-const PROTECT_DOWNSCALE_TARGET_WIDTH = 8192;
+const MAX_IMAGE_DIMENSION = 8192;
 
 /**
  * Final encode is **lossless PNG** (no JPEG quality knob on this path). Input JPEGs are decoded at full fidelity by Sharp/libvips.
@@ -35,7 +33,7 @@ const PUBLIC_REL = join("public", "test.jpg");
 type EmbedIdSource = "memberId" | "userId" | "test_error_fallback" | "form_upload";
 
 /**
- * Decode image to RGBA; downscale if wider than threshold (Sharp raw pipeline).
+ * Decode image to RGBA; downscale only if **max(w,h) > `MAX_IMAGE_DIMENSION`** (Sharp raw pipeline).
  * Sharp omits output metadata by default (no `keepMetadata()`); there is no `.strip()` chain — see Sharp docs.
  */
 async function decodeResizeToRgba(
@@ -47,9 +45,11 @@ async function decodeResizeToRgba(
 
   let pipeline = sharp(input, SHARP_DECODE_OPTIONS).ensureAlpha();
 
-  if (w0 > PROTECT_MAX_WIDTH_BEFORE_DOWNSCALE) {
-    const tw = PROTECT_DOWNSCALE_TARGET_WIDTH;
-    const th = Math.max(1, Math.round((h0 * tw) / w0));
+  const maxDim = Math.max(w0, h0);
+  if (maxDim > MAX_IMAGE_DIMENSION) {
+    const scale = MAX_IMAGE_DIMENSION / maxDim;
+    const tw = Math.max(1, Math.round(w0 * scale));
+    const th = Math.max(1, Math.round(h0 * scale));
     pipeline = pipeline.resize(tw, th, { fit: "fill" });
   }
 
@@ -122,7 +122,6 @@ async function respondProtectedImage(
   idSource: EmbedIdSource,
   opts?: { forceDownload?: boolean }
 ): Promise<NextResponse> {
-  console.log("!!! EXECUTING V4.9 PURE PIPELINE !!!");
   try {
     const { data, width, height } = await decodeResizeToRgba(input);
 
@@ -132,7 +131,7 @@ async function respondProtectedImage(
       raw: { width, height, channels: 4 },
     })
       .png({
-        compressionLevel: 6,
+        compressionLevel: 9,
         adaptiveFiltering: false,
       })
       .toBuffer();
@@ -142,7 +141,7 @@ async function respondProtectedImage(
       "X-Content-Type-Options": "nosniff",
       "Cache-Control": "no-cache",
       "X-Creator-Guard-Embed-Source": idSource,
-      "X-Creator-Guard-Version": "V4.9-PURE-PIPELINE-001",
+      "X-Creator-Guard-Version": "V5.2-GOLD",
     };
     if (opts?.forceDownload) {
       const baseName = safeDownloadBaseName(embeddedId);
@@ -184,7 +183,6 @@ function formUploadLooksLikeImage(file: File): boolean {
 }
 
 export async function POST(request: NextRequest) {
-  throw new Error("STARK_V5_ACTIVE");
   let formData: FormData;
   try {
     formData = await request.formData();
@@ -198,16 +196,14 @@ export async function POST(request: NextRequest) {
   const memberTrimmed = String(formData.get("memberId") ?? "").trim();
   const userTrimmed =
     String(formData.get("userId") ?? "").trim() || "fallback_user";
-  console.log("!!! PROTECT_API_START !!!", { userId: userTrimmed });
 
-  const fileField = formData.get("file");
-  if (!fileField || !(fileField instanceof File)) {
+  const file = formData.get("file");
+  if (!file || !(file instanceof File)) {
     return NextResponse.json(
       { error: "Missing file", message: "Form field `file` must be an image." },
       { status: 400 }
     );
   }
-  const file = fileField as File;
 
   if (!formUploadLooksLikeImage(file)) {
     return NextResponse.json(
@@ -241,13 +237,6 @@ export async function POST(request: NextRequest) {
   const idSource: EmbedIdSource =
     baseSource === "test_error_fallback" ? "form_upload" : baseSource;
 
-  console.log("[Creator Guard protect] POST form upload", {
-    embeddedId,
-    idSource,
-    memberId: memberTrimmed || "(empty)",
-    userId: userTrimmed || "(empty)",
-  });
-
   return respondProtectedImage(input, embeddedId, idSource, {
     forceDownload: true,
   });
@@ -259,19 +248,6 @@ export async function GET(request: NextRequest) {
   const { embeddedId, idSource } = resolveEmbeddedId(
     memberTrimmed,
     userTrimmed
-  );
-
-  console.log(
-    "[Creator Guard protect] DCT embedding id:",
-    embeddedId,
-    "| source:",
-    idSource,
-    "| memberId:",
-    memberTrimmed || "(empty)",
-    "| userId:",
-    userTrimmed || "(empty)",
-    "| rawQuery:",
-    request.nextUrl.search || "(none)"
   );
 
   const imageUrlParam = pickSearchParam(request, "imageUrl");
