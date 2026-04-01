@@ -503,7 +503,7 @@ export default function Home() {
         res = await fetch("/api/protect", {
           method: "POST",
           body: fd,
-          signal: AbortSignal.timeout(120_000),
+          signal: AbortSignal.timeout(180_000),
         });
       } catch (fetchErr) {
         const msg =

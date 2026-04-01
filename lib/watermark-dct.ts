@@ -137,18 +137,6 @@ function watermarkMagicV3FirstFourBytesLsbFirstBits(): number[] {
   return bits;
 }
 
-function collapsedBitsPrefixBinaryString(
-  collapsedBits: number[],
-  bitCount: number
-): string {
-  const n = Math.min(bitCount, collapsedBits.length);
-  let s = "";
-  for (let i = 0; i < n; i++) {
-    s += (collapsedBits[i]! & 1) ? "1" : "0";
-  }
-  return s;
-}
-
 type MagicSkipCandidate = {
   err: number;
   streamInvert: boolean;
@@ -176,11 +164,6 @@ function bruteForceMagicSkip0To32(
   collapsedBits: number[],
   gapDecoderInverts: boolean
 ): BruteForceMagicSkipResult {
-  console.log(
-    "[Creator Guard DCT] bruteForceMagicSkip0To32 collapsedBits.length:",
-    collapsedBits.length
-  );
-
   const magic32Msb = payloadBufferToBigEndianBits(
     WATERMARK_MAGIC_V3.subarray(0, 4)
   );
@@ -250,37 +233,9 @@ function bruteForceMagicSkip0To32(
       { err: e3, streamInvert: true, magicByteRev: true },
     ];
 
-    const minErr = Math.min(e0, e1, e2, e3);
     const chosen = pickAcceptable(candidates);
 
-    if (i === 0 && !chosen && hammingWithinMagicTolerance(minErr)) {
-      console.log(
-        "[Creator Guard] Why was index 0 rejected with",
-        minErr,
-        "errors?",
-        {
-          MAGIC_HAMMING_MAX_ERRORS,
-          e0,
-          e1,
-          e2,
-          e3,
-          gapDecoderInverts,
-          tolerances: [e0, e1, e2, e3].map((e) => hammingWithinMagicTolerance(e)),
-        }
-      );
-    }
-
     if (chosen) {
-      console.log(
-        "FOUND MAGIC AT BIT:",
-        i,
-        "ERROR_BITS:",
-        chosen.err,
-        "INVERTED:",
-        chosen.streamInvert,
-        "MAGIC_LSB_FIRST_PER_BYTE:",
-        chosen.magicByteRev
-      );
       return {
         match: { offset: i, streamInvert: chosen.streamInvert },
         scanStats: {
@@ -291,20 +246,6 @@ function bruteForceMagicSkip0To32(
       };
     }
   }
-
-  if (globalBestIndex >= 0) {
-    console.log(
-      `[Creator Guard] Scan failed. Best match was ${globalBestErr} errors at index ${globalBestIndex}.`
-    );
-  } else {
-    console.log(
-      `[Creator Guard] Scan failed. No 32-bit window scanned (collapsedBits.length ${collapsedBits.length}).`
-    );
-  }
-  console.log(
-    "[Creator Guard] collapsedBits first 64 bits:",
-    collapsedBitsPrefixBinaryString(collapsedBits, 64)
-  );
 
   return {
     match: null,
@@ -1331,11 +1272,6 @@ function tryBlindExtractAfterMagicMarker(
     const cleaned = blindExtractStripNonPrintable(raw);
     const prevSnippet = cleaned.slice(0, 96);
     previewParts.push(`${winBits}b:${prevSnippet}`);
-    console.log("[Creator Guard DCT] blind extract probe", {
-      winBits,
-      rawPreview: raw.slice(0, 48),
-      cleanedPreview: cleaned.slice(0, 48),
-    });
     const trimmed = cleaned.trim();
     const alnumish = countLettersOrDigits(cleaned);
     const longEnough = trimmed.length >= BLIND_MIN_CLEANED_LEN;
@@ -1343,13 +1279,6 @@ function tryBlindExtractAfterMagicMarker(
     if (longEnough || alnumOk) {
       const userId = trimmed.length > 0 ? trimmed : raw.trim();
       if (userId.length === 0) continue;
-      console.log("[Creator Guard DCT] blind extract ACCEPT", {
-        winBits,
-        reason: longEnough ? "cleaned_len>=5" : "letters_or_digits>=3",
-        trimmedLen: trimmed.length,
-        letterOrDigitCount: alnumish,
-        userIdPreview: userId.slice(0, 80),
-      });
       return {
         userId,
         blindCleanedPreview: previewParts.join(" | ").slice(0, 500),
@@ -1513,11 +1442,6 @@ export function extractMemberIdDctDetailed(
           loadAuditsForSkip(magicSkipBits));
       }
       streamInvertCollapsed = found.streamInvert;
-      console.log("[Creator Guard DCT] brute magic aligned", {
-        offset: found.offset,
-        streamInvertCollapsed: found.streamInvert,
-        magicSkipBits,
-      });
     }
   }
 
@@ -1582,24 +1506,11 @@ export function extractMemberIdDctDetailed(
   for (let len = 1; len <= MAX_USER_ID_BYTES; len++) {
     const Lphy = physicalStreamBitLengthForLen(len, magicSkipBits);
     if (count < Lphy) {
-      if (hadBruteMagicMatch) {
-        console.log("[Creator Guard DCT] extract skip: insufficient blocks for Lphy", {
-          len,
-          Lphy,
-          count,
-        });
-      }
       continue;
     }
 
     const allBits = reconstructBigEndianBitsFromBlocks(blockBits, count, Lphy);
     if (!allBits || allBits.length !== Lphy) {
-      if (hadBruteMagicMatch) {
-        console.log("[Creator Guard DCT] extract skip: reconstruct physical bits failed", {
-          len,
-          Lphy,
-        });
-      }
       continue;
     }
 
@@ -1612,12 +1523,6 @@ export function extractMemberIdDctDetailed(
           rawLengthHex: "",
           lastCandidateLen: len,
         };
-        console.log("[Creator Guard DCT] extract skip: collapsed length mismatch", {
-          len,
-          needCollapsed,
-          got: collapsedRaw?.length ?? null,
-          dataLength: len,
-        });
       }
       continue;
     }
@@ -1626,21 +1531,6 @@ export function extractMemberIdDctDetailed(
       collapsedRaw,
       streamInvertCollapsed
     );
-
-    const bitsRequiredForPayload = (6 + len) * 8 + magicSkipBits;
-    const dataLengthExceedsCollapsed = bitsRequiredForPayload > collapsed.length;
-
-    if (hadBruteMagicMatch) {
-      console.log("[Creator Guard DCT] extract probe", {
-        candidateUserIdLen: len,
-        dataLength: len,
-        collapsedLen: collapsed.length,
-        magicSkipBits,
-        bitsRequiredForPayload,
-        dataLengthExceedsCollapsed,
-        streamInvertCollapsed,
-      });
-    }
 
     const payloadBits = sliceCollapsedPayloadBits(
       collapsed,
@@ -1654,12 +1544,6 @@ export function extractMemberIdDctDetailed(
           rawLengthHex: "",
           lastCandidateLen: len,
         };
-        console.log("[Creator Guard DCT] extract skip: payload slice", {
-          len,
-          collapsedLen: collapsed.length,
-          expectedPayloadBits: (6 + len) * 8,
-          gotPayloadBits: payloadBits?.length ?? null,
-        });
       }
       continue;
     }
@@ -1672,7 +1556,6 @@ export function extractMemberIdDctDetailed(
           rawLengthHex: "",
           lastCandidateLen: len,
         };
-        console.log("[Creator Guard DCT] extract skip: buffer pack", { len });
       }
       continue;
     }
@@ -1691,12 +1574,6 @@ export function extractMemberIdDctDetailed(
           rawLengthHex,
           lastCandidateLen: len,
         };
-        console.log("[Creator Guard DCT] extract skip: declared length mismatch", {
-          len,
-          declaredLenBits32_47,
-          rawLengthHex,
-          magicHeadHex: buf.subarray(0, 4).toString("hex"),
-        });
       }
       continue;
     }
@@ -1709,12 +1586,6 @@ export function extractMemberIdDctDetailed(
           rawLengthHex,
           lastCandidateLen: len,
         };
-        console.log("[Creator Guard DCT] extract skip: packed vs bits length disagree", {
-          len,
-          declaredFromPacked,
-          declaredLenBits32_47,
-          rawLengthHex,
-        });
       }
       continue;
     }
@@ -1734,11 +1605,6 @@ export function extractMemberIdDctDetailed(
           rawLengthHex,
           lastCandidateLen: len,
         };
-        console.log("[Creator Guard DCT] extract skip: magic header not CGW\\x03", {
-          len,
-          magicHeadHex: buf.subarray(0, 4).toString("hex"),
-          rawLengthHex,
-        });
       }
       continue;
     }
@@ -1746,11 +1612,7 @@ export function extractMemberIdDctDetailed(
     try {
       const userId = new TextDecoder("utf-8", { fatal: true }).decode(raw);
       return { ok: true, userId };
-    } catch (utf8Err) {
-      console.error(
-        "[Creator Guard DCT] UTF-8 decode failed after magic OK",
-        { len, rawLengthHex, err: String(utf8Err) }
-      );
+    } catch {
       if (hadBruteMagicMatch) {
         forceExtractProbe = {
           failedAt: "utf8",
@@ -1818,10 +1680,6 @@ export function extractMemberIdDctDetailed(
         fixedLen
       );
       if (rescued != null && rescued.length > 0) {
-        console.log("[Creator Guard DCT] emergency rescue ok", {
-          fixedLen,
-          preview: rescued.slice(0, 32),
-        });
         return { ok: true, userId: rescued };
       }
     }

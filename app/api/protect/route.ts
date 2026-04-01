@@ -1,7 +1,7 @@
 import { Buffer } from "node:buffer";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { Jimp } from "jimp";
+import { Jimp, JimpMime } from "jimp";
 import { PNGColorType, PNGFilterType } from "@jimp/js-png";
 import { isAllowedProtectSourceUrl } from "@/lib/protect-source-url";
 import {
@@ -15,8 +15,8 @@ export const runtime = "nodejs";
 const MAX_REMOTE_IMAGE_BYTES = 25 * 1024 * 1024;
 
 /** Wide images blow interior 8×8 block count and risk serverless timeouts; shrink before DCT embed. */
-const PROTECT_MAX_WIDTH_BEFORE_DOWNSCALE = 1200;
-const PROTECT_DOWNSCALE_TARGET_WIDTH = 1000;
+const PROTECT_MAX_WIDTH_BEFORE_DOWNSCALE = 800;
+const PROTECT_DOWNSCALE_TARGET_WIDTH = 800;
 
 const PUBLIC_REL = join("public", "test.jpg");
 
@@ -95,32 +95,26 @@ async function respondProtectedPng(
       const tw = PROTECT_DOWNSCALE_TARGET_WIDTH;
       const th = Math.max(1, Math.round((h0 * tw) / w0));
       image.resize({ w: tw, h: th });
-      console.log("[Creator Guard protect] auto-resize", {
-        from: `${w0}x${h0}`,
-        to: `${tw}x${th}`,
-      });
     }
 
     embedMemberIdDct(image, embeddedId);
 
     {
-      const { data, width } = image.bitmap;
+      const { data } = image.bitmap;
       data[0] = 255;
       data[1] = 0;
       data[2] = 0;
       data[3] = 255;
-      console.log("[Creator Guard protect] TEMP_pixel00_red_marker", {
-        data0_R: data[0],
-        data1_G: data[1],
-        data2_B: data[2],
-        data3_A: data[3],
-        width,
-      });
     }
 
-    const buf = await image.getBuffer("image/png", {
+    /** JPEG-oriented hook; no-op for PNG pipeline but kept for future / mixed formats. */
+    (image as unknown as { quality?: (n: number) => void }).quality?.(70);
+
+    const buf = await image.getBuffer(JimpMime.png, {
       colorType: PNGColorType.COLOR,
       filterType: PNGFilterType.NONE,
+      /** Lower zlib level = faster encode, slightly larger files (still lossless). */
+      deflateLevel: 3,
     });
     const body: Buffer = Buffer.isBuffer(buf) ? buf : Buffer.from(buf);
 
