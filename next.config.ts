@@ -6,7 +6,7 @@ import type { NextConfig } from "next";
  * Root dashboard: `app/page.tsx` (Creator Guard).
  */
 const nextConfig: NextConfig = {
-  serverExternalPackages: ["jimp", "sharp"],
+  serverExternalPackages: ["sharp"],
 };
 
 export default nextConfig;

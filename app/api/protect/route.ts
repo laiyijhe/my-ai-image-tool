@@ -4,7 +4,7 @@ import { join } from "node:path";
 import sharp from "sharp";
 import { isAllowedProtectSourceUrl } from "@/lib/protect-source-url";
 import {
-  embedMemberIdDct,
+  embedMemberIdDctInBitmap,
   WatermarkEmbedCapacityError,
 } from "@/lib/watermark-dct";
 import { type NextRequest, NextResponse } from "next/server";
@@ -23,7 +23,7 @@ const PUBLIC_REL = join("public", "test.jpg");
 
 type EmbedIdSource = "memberId" | "userId" | "test_error_fallback" | "form_upload";
 
-/** Decode image to RGBA; downscale if wider than threshold (matches prior Jimp + DCT pipeline). */
+/** Decode image to RGBA; downscale if wider than threshold (Sharp raw pipeline). */
 async function decodeResizeToRgba(
   input: Buffer
 ): Promise<{ data: Buffer; width: number; height: number }> {
@@ -109,20 +109,14 @@ async function respondProtectedPng(
   opts?: { forceDownload?: boolean }
 ): Promise<NextResponse> {
   try {
-    const bitmap = await decodeResizeToRgba(input);
-    const image = { bitmap };
+    const { data, width, height } = await decodeResizeToRgba(input);
 
-    embedMemberIdDct(image, embeddedId);
+    embedMemberIdDctInBitmap(data, width, height, embeddedId);
 
-    {
-      const { data } = image.bitmap;
-      data[0] = 255;
-      data[1] = 0;
-      data[2] = 0;
-      data[3] = 255;
-    }
-
-    const { data, width, height } = image.bitmap;
+    data[0] = 255;
+    data[1] = 0;
+    data[2] = 0;
+    data[3] = 255;
     const body = await sharp(data, {
       raw: { width, height, channels: 4 },
     })

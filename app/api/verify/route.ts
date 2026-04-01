@@ -1,4 +1,4 @@
-import { Jimp } from "jimp";
+import sharp from "sharp";
 import {
   extractMemberIdDctDetailed,
   type BitShiftHex0to7,
@@ -53,7 +53,29 @@ export async function POST(request: Request) {
     }
 
     const ab = await file.arrayBuffer();
-    const image = await Jimp.read(Buffer.from(ab));
+    const buf = Buffer.from(ab);
+    const { data, info } = await sharp(buf)
+      .ensureAlpha()
+      .toColorspace("srgb")
+      .raw()
+      .toBuffer({ resolveWithObject: true });
+
+    const channels = info.channels ?? 4;
+    if (channels !== 4) {
+      return NextResponse.json(
+        { ok: false, message: "VERIFY_EXPECT_RGBA" },
+        { status: S }
+      );
+    }
+
+    const image = {
+      bitmap: {
+        data: Buffer.from(data),
+        width: info.width,
+        height: info.height,
+      },
+    };
+
     const result = extractMemberIdDctDetailed(image);
 
     if (result.ok) {
