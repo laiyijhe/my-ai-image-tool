@@ -112,7 +112,7 @@ export const dictionary: Record<Locale, Messages> = {
     quickTestNeedMember: "Enter a Member ID.",
     quickTestFailed: "Could not watermark or download. Try a smaller image.",
     quickTestWorking: "Embedding…",
-    quickTestProcessingWait: "Processing… (might take 10s)",
+    quickTestProcessingWait: "Processing... (might take 10s)",
     tabQuickShield: "Quick Shield",
     tabMassDelivery: "Mass Delivery",
     quickProtectDownload: "Protect & download",

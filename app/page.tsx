@@ -497,7 +497,24 @@ export default function Home() {
       const fd = new FormData();
       fd.set("file", quickTestFile);
       fd.set("memberId", mid);
-      const res = await fetch("/api/protect", { method: "POST", body: fd });
+      console.log("Sending request...");
+      let res: Response;
+      try {
+        res = await fetch("/api/protect", {
+          method: "POST",
+          body: fd,
+          signal: AbortSignal.timeout(120_000),
+        });
+      } catch (fetchErr) {
+        const msg =
+          fetchErr instanceof Error ? fetchErr.message : String(fetchErr);
+        console.error("[Creator Guard] /api/protect fetch error:", fetchErr);
+        alert(msg);
+        pushToast(msg, "error");
+        setQuickTestPhase("idle");
+        return;
+      }
+      console.log("Received response...");
       const ct = (res.headers.get("content-type") ?? "").toLowerCase();
       if (!res.ok) {
         const data = (await res.json().catch(() => ({}))) as {
@@ -546,10 +563,10 @@ export default function Home() {
       pushToast(t.toastProtectReady, "success");
       setQuickTestPhase("idle");
     } catch (e) {
-      pushToast(
-        e instanceof Error ? e.message : t.quickTestFailed,
-        "error"
-      );
+      const msg = e instanceof Error ? e.message : String(e);
+      console.error("[Creator Guard] Quick protect error:", e);
+      alert(msg);
+      pushToast(msg || t.quickTestFailed, "error");
       setQuickTestPhase("idle");
     }
   }, [
@@ -749,13 +766,14 @@ export default function Home() {
               </button>
 
               <label
-                htmlFor="quick-test-member"
+                htmlFor="quick-member-id"
                 className="mt-8 block text-[11px] font-semibold uppercase tracking-wider text-slate-500"
               >
                 {t.quickTestMemberLabel}
               </label>
               <input
-                id="quick-test-member"
+                id="quick-member-id"
+                name="memberId"
                 type="text"
                 value={quickTestMemberId}
                 onChange={(e) => setQuickTestMemberId(e.target.value)}
@@ -775,7 +793,9 @@ export default function Home() {
                 {quickTestPhase === "working" ? (
                   <>
                     <SpinnerRing className="h-5 w-5 border-slate-600/30 border-t-slate-800" />
-                    <span>{t.quickTestWorking}</span>
+                    <span className="text-center leading-tight">
+                      {t.quickTestProcessingWait}
+                    </span>
                   </>
                 ) : (
                   t.quickProtectDownload
