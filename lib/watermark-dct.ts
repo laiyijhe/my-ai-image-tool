@@ -32,8 +32,8 @@ export interface WatermarkVerifyExtractDebug {
 
 /**
  * Creator Guard — DCT v4 (production embed) / v3 (legacy extract)
- * **V7.1 GHOST-REVEAL:** Stronger SNR (ghost **10**, dark **15**); **`variance < 10` → no embed**; **`10 ≤ variance < 150` → ghost**;
- * **`variance ≥ 150`:** bright tiers; cross-block dither; **α=0** / **`Y > 245`** skip; **Hamming(7,4)** (v4).
+ * **V8.0 PURE-SILK-FINAL-EDITION (photography):** Decode robustness traded for **invisibility** — **`Y < 20`** & **`variance ≤ 15`** silent;
+ * ghost **2** **only** on **`15 < variance < 150`**; no hash dither (**`dd = delta`**); highlight **`Y > 245`**; **α=0** mask; **Hamming(7,4)** (v4).
  */
 export const WATERMARK_MAGIC_V3 = Buffer.from([0x43, 0x47, 0x57, 0x03]);
 /** v4: same CGW prefix, `0x04` = Hamming-wrapped UTF-8 ID after header. */
@@ -86,13 +86,15 @@ const BRIGHT_ULTRA_WHITE_Y = 240;
 const BRIGHT_RAMP_MAG_TOP = 2;
 const BRIGHT_RAMP_MAG_LO = 1;
 /**
- * **Smooth skip:** variance below this ⇒ **Mag 0** (V7.1: **10**).
+ * **Flat protection:** **`variance ≤` this** ⇒ **Mag 0** (V8.0: **15**); ghost requires **`variance > 15`**.
  */
-const BLOCK_VAR_SMOOTH_LT = 10;
+const BLOCK_VAR_SMOOTH_LT = 15;
 /**
- * Below this (and ≥ smooth): **ghost embed** fixed **Mag 4** — capacity without visible grid.
+ * Ghost tier upper bound (exclusive): **`15 < variance <` this** only, capped at **`EMBED_MAG_GAP_GHOST_LOW_TEXTURE`**.
  */
 const BLOCK_VAR_LOW_TEXTURE_LT = 150;
+/** Mean block luma below this ⇒ **Mag 0** (shadows / fur / silhouettes). */
+const PURE_SILK_DARK_SKIP = 20;
 /** Above this variance → edge tier (**bright** only uses **Mag 10** in V5.5). */
 const BLOCK_VAR_HIGH_CONTRAST_GT = 500;
 
@@ -105,12 +107,12 @@ const EMBED_MAG_GAP_LUMA_EXTREME = 8;
 const EMBED_MAG_GAP_SMOOTH = 8;
 /** Bright high-contrast 8×8 (`yAvg > 140`, `variance > 500`) — V5.5 down from **25**. */
 const EMBED_MAG_GAP_EDGE_CONTRAST = 10;
-/** Low-texture band **`[BLOCK_VAR_SMOOTH_LT, BLOCK_VAR_LOW_TEXTURE_LT)`** — ghost gap (V7.1: **10**, higher SNR). */
-const EMBED_MAG_GAP_GHOST_LOW_TEXTURE = 10;
-/** **`yAvg ≤ 140`** dark zone target (V7.1: **15**); clamp range must allow it. */
-const EMBED_MAG_GAP_DARK_ZONE = 15;
-const DARK_ZONE_MAG_CLAMP_MIN = 10;
-const DARK_ZONE_MAG_CLAMP_MAX = 20;
+/** Ghost tier **maximum** gap — photography cap (**2**). */
+const EMBED_MAG_GAP_GHOST_LOW_TEXTURE = 2;
+/** **`yAvg ≤ 140`** path target — **0** = no watermark in dark mids (silhouettes use **`PURE_SILK_DARK_SKIP`** too). */
+const EMBED_MAG_GAP_DARK_ZONE = 0;
+const DARK_ZONE_MAG_CLAMP_MIN = 0;
+const DARK_ZONE_MAG_CLAMP_MAX = 0;
 /** Fallback when primary target cannot be met after clamp (step toward weaker gap). */
 const EMBED_MAG_GAP_RELAXED_STEP = 8;
 /** Last resort rung below `EMBED_MAG_GAP_LUMA_EXTREME` when primary is already 8. */
@@ -120,8 +122,8 @@ const GAP_ENFORCE_MAX_STEPS = 192;
 
 /**
  * Signed gap `|A|−|B|` vs ±threshold for bit 1 / 0; tie band uses sign of gap.
- * **`magTarget === 0`** → **1**; **`magTarget < 8`** → **1**; **`8 ≤ magTarget < 14`** → **2** (V7.1: covers **ghost Mag 10**).
- * **`≥14`** → **3** (dark **15**), **`≥18`** → **5**. Deep-scan **`bias -1`** can reach **0** when base **t === 1**.
+ * **`magTarget === 0`** → **1**; **`magTarget < 8`** → **1** (V8.0 ghost **2**); **`8 ≤ magTarget < 14`** → **2**.
+ * **`≥14`** → **3**, **`≥18`** → **5**. Deep-scan **`bias -1`** can reach **0** when base **t === 1**.
  */
 export function extractBitThresholdForMagTarget(
   magTarget: number,
@@ -541,8 +543,8 @@ function clampDarkZoneMag(m: number): number {
 }
 
 /**
- * Per-block perceptual magnitude (DCT gap). **V7.1:** **`variance < 10` → 0**; **`10 ≤ variance < 150` → ghost 10**;
- * **`variance ≥ 150`:** bright ramp / edges; dark **`yAvg ≤ 140` → 15** (clamped).
+ * Per-block perceptual magnitude (DCT gap). **V8.0 photography:** silent flat (**`variance ≤ 15`**) & near-black (**`Y < 20`**);
+ * **ghost 2** only **`15 < variance < 150`**; **`variance ≥ 150`** → bright / contrast tiers; dark mids **0**.
  */
 export function getAdaptiveMagnitude(luma: Float32Array): number {
   let sum = 0;
@@ -556,7 +558,11 @@ export function getAdaptiveMagnitude(luma: Float32Array): number {
   }
   const variance = varAcc * (1 / 64);
 
-  if (variance < BLOCK_VAR_SMOOTH_LT) {
+  if (variance <= BLOCK_VAR_SMOOTH_LT) {
+    return 0;
+  }
+
+  if (yAvg < PURE_SILK_DARK_SKIP) {
     return 0;
   }
 
@@ -740,7 +746,7 @@ function idct8x8(coeffs: Float32Array): Float32Array {
   return out;
 }
 
-/** V7.1: BT.601 luma in **Float32** for DCT (no early integer quant). */
+/** V8.0: BT.601 luma in **Float32** for DCT (no early integer quant). */
 function bt601LumaFloatFromRgb(r: number, g: number, b: number): number {
   const rf = Math.max(0, Math.min(255, +r));
   const gf = Math.max(0, Math.min(255, +g));
@@ -765,7 +771,7 @@ function captureFullyTransparentSkipMask(
   return mask;
 }
 
-/** Near-white / **#FFFFFF** red line in BT.601 luma (**245** — near-white texture unlock). */
+/** Highlight protection: BT.601 luma **>** this ⇒ skip pixel writes (V8.0: **245**). */
 const PURE_SILK_LUMA_SKIP = 245;
 
 /** Skip: **pre-flatten fully transparent** (mask) or **luma > PURE_SILK_LUMA_SKIP**. */
@@ -780,45 +786,6 @@ function pixelSkipSilkEmbed(
   const g = data[o + 1]!;
   const b = data[o + 2]!;
   return bt601LumaFloatFromRgb(r, g, b) > PURE_SILK_LUMA_SKIP;
-}
-
-/** Per-block edge phase (deterministic). */
-function blockEdgeDitherScale(bx: number, by: number, dx: number, dy: number): number {
-  const edge = dx === 0 || dx === 7 || dy === 0 || dy === 7;
-  if (!edge) return 1;
-  const h =
-    (bx * 374761393 + by * 668265263 + dx * 224682251 + dy * 326648991) >>> 0;
-  return 0.78 + 0.2 * (h / 4294967295);
-}
-
-/** Average taper with **adjacent 8×8 blocks** at shared seams — cross-block dither. */
-function crossBlockDitherScale(
-  bx: number,
-  by: number,
-  dx: number,
-  dy: number,
-  width: number,
-  height: number
-): number {
-  let sum = blockEdgeDitherScale(bx, by, dx, dy);
-  let n = 1;
-  if (dx === 0 && bx > 0) {
-    sum += blockEdgeDitherScale(bx - 1, by, 7, dy);
-    n++;
-  }
-  if (dx === 7 && bx * 8 + 8 < width) {
-    sum += blockEdgeDitherScale(bx + 1, by, 0, dy);
-    n++;
-  }
-  if (dy === 0 && by > 0) {
-    sum += blockEdgeDitherScale(bx, by - 1, dx, 7);
-    n++;
-  }
-  if (dy === 7 && by * 8 + 8 < height) {
-    sum += blockEdgeDitherScale(bx, by + 1, dx, 0);
-    n++;
-  }
-  return sum / n;
 }
 
 /** 8×8 luma into `out` (length ≥ 64); layout x*8+y matches dct8x8. */
@@ -888,7 +855,7 @@ function applyBlockDeltaToRgb(
       if (pixelSkipSilkEmbed(data, o, opts?.transparentSkip)) {
         continue;
       }
-      const dd = d * crossBlockDitherScale(bx, by, dx, dy, width, height);
+      const dd = d;
       const rf = r0 + dd;
       const gf = g0 + dd;
       const bf = b0 + dd;
@@ -1192,7 +1159,7 @@ function buildSparseEmbedBlockIndices(
   return out;
 }
 
-/** Same order as `sparseK`; drop **smooth** blocks (`variance < BLOCK_VAR_SMOOTH_LT` ⇒ mag 0). Embed/extract must share this list. */
+/** Same order as `sparseK`; drop silent blocks (`getAdaptiveMagnitude === 0`). Embed/extract must share this list. */
 function filterSparseToTextureEmbedBlocks(
   data: Buffer,
   width: number,
@@ -1976,7 +1943,7 @@ export function embedMemberIdDctInBitmap(
 
   if (embedBlockCount < Lphy) {
     throw new WatermarkEmbedCapacityError(
-      `Image too small for texture-only DCT watermark: need at least ${Lphy} textured 8×8 blocks (variance ≥ ${BLOCK_VAR_SMOOTH_LT}, checkerboard + central 70%), have ${embedBlockCount} (sparse candidates ${sparseAll.length}; full interior ${count}; ${bw}×${bh})`,
+      `Image too small for texture-only DCT watermark: need at least ${Lphy} embed-eligible 8×8 blocks (variance > ${BLOCK_VAR_SMOOTH_LT} among other gates, checkerboard + central 70%), have ${embedBlockCount} (sparse candidates ${sparseAll.length}; full interior ${count}; ${bw}×${bh})`,
       Lphy,
       embedBlockCount
     );

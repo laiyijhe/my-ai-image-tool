@@ -124,7 +124,8 @@ async function respondProtectedImage(
   opts?: { forceDownload?: boolean }
 ): Promise<NextResponse> {
   try {
-    const { data, width, height } = await decodeResizeToRgba(input);
+    console.log(">>> [DEPLOY_CHECK] V8.0-PURE-SILK IS ACTIVE <<<");
+    let { data, width, height } = await decodeResizeToRgba(input);
 
     let isBestEffort = false;
     try {
@@ -135,6 +136,8 @@ async function respondProtectedImage(
         console.warn(
           "Capacity reached! Falling back to Best Effort (No Watermark)."
         );
+        // Fresh decode — no flatten / embed mutations (bit-identical to pipeline input).
+        ({ data, width, height } = await decodeResizeToRgba(input));
       } else {
         throw e;
       }
@@ -155,7 +158,7 @@ async function respondProtectedImage(
       "X-Content-Type-Options": "nosniff",
       "Cache-Control": "no-cache",
       "X-Creator-Guard-Embed-Source": idSource,
-      "X-Creator-Guard-Version": "V7.1-GHOST-REVEAL",
+      "X-Creator-Guard-Version": "V8.0-PURE-SILK-FINAL-EDITION",
     };
     if (isBestEffort) {
       headers["X-Creator-Guard-Best-Effort"] = "capacity_no_watermark";
