@@ -183,6 +183,7 @@ function formUploadLooksLikeImage(file: File): boolean {
 }
 
 export async function POST(request: NextRequest) {
+  throw new Error("STARK_V5_ACTIVE");
   let formData: FormData;
   try {
     formData = await request.formData();
@@ -197,13 +198,14 @@ export async function POST(request: NextRequest) {
   const userTrimmed =
     String(formData.get("userId") ?? "").trim() || "fallback_user";
 
-  const file = formData.get("file");
-  if (!file || !(file instanceof File)) {
+  const fileField = formData.get("file");
+  if (!fileField || !(fileField instanceof File)) {
     return NextResponse.json(
       { error: "Missing file", message: "Form field `file` must be an image." },
       { status: 400 }
     );
   }
+  const file = fileField as File;
 
   if (!formUploadLooksLikeImage(file)) {
     return NextResponse.json(
