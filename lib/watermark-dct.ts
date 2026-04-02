@@ -95,9 +95,15 @@ const EMBED_MAG_GAP_PURE_WHITE = 2;
 const EMBED_MAG_GAP_LUMA_EXTREME = 8;
 /** Skin / flat mid-luma smooth tier (was 10). */
 const EMBED_MAG_GAP_SMOOTH = 8;
-const EMBED_MAG_GAP_TEXTURED = 20;
-/** Logo-edge / high-contrast 8×8 blocks (`variance > BLOCK_VAR_HIGH_CONTRAST_GT`). */
+/** Logo-edge / high-contrast on **bright** blocks only (`yAvg > 140`, `variance > 500`). */
 const EMBED_MAG_GAP_EDGE_CONTRAST = 25;
+/**
+ * V5.3 photography-grade dark zone: **all** **`yAvg ≤ 140`** → this target (no Mag **20** textured / **25** high-variance dark).
+ * Includes **`variance > 500`** dark “texture/edge” blocks (formerly **25**) and busy grass (**formerly 20**).
+ */
+const EMBED_MAG_GAP_DARK_ZONE = 8;
+const DARK_ZONE_MAG_CLAMP_MIN = 6;
+const DARK_ZONE_MAG_CLAMP_MAX = 12;
 /** Fallback when primary target cannot be met after clamp (step toward weaker gap). */
 const EMBED_MAG_GAP_RELAXED_STEP = 8;
 /** Last resort rung below `EMBED_MAG_GAP_LUMA_EXTREME` when primary is already 8. */
@@ -108,7 +114,7 @@ const GAP_ENFORCE_MAX_STEPS = 192;
 /**
  * Signed gap `|A|−|B|` vs ±threshold for bit 1 / 0; tie band uses sign of gap.
  * **`magTarget < 8`** (e.g. gold ramp **2–6**) → **1**; **`8 ≤ magTarget < 14`** → **2**.
- * **`≥14`** → **3**, **`≥18`** → **5** (textured **20** / edge **25**). Deep-scan **`bias -1`** can reach **0** when base **t === 1**.
+ * **`≥14`** → **3**, **`≥18`** → **5** (bright edge **25**). Dark zone **`≤ 12`**. Deep-scan **`bias -1`** can reach **0** when base **t === 1**.
  */
 export function extractBitThresholdForMagTarget(
   magTarget: number,
@@ -520,10 +526,17 @@ function sliceCollapsedHeaderAndEccV4(
   };
 }
 
+function clampDarkZoneMag(m: number): number {
+  return Math.min(
+    Math.max(Math.round(m), DARK_ZONE_MAG_CLAMP_MIN),
+    DARK_ZONE_MAG_CLAMP_MAX
+  );
+}
+
 /**
  * Per-block perceptual magnitude target (DCT gap).
- * **V5.2 gold ramp:** if **`yAvg > 140`** and **`variance ≤ 500`**: **`mag = round(6 - (yAvg - 140) × (4/110))`** clamped to **[2, 6]** on **(140, 250]**; **`Y > 250` → 2**.
- * If **`yAvg > 140`** and **`variance > 500`**, **25** (logo edges). For **`yAvg ≤ 140`**: **`variance > 500` → 25**; **`Y < 40` → 8**; else **smooth 8 / textured 20**.
+ * **Bright (`yAvg > 140`):** master ramp **6 → 2** (pure white **2**), edges **`variance > 500` → 25**.
+ * **`yAvg ≤ 140`:** unified **Mag 8** (clamp **[6, 12]**) — shadows, smooth dark, textured dark, **`variance > 500`** dark.
  * Independent of embedded **Member ID** / **userId** — uses only the 8×8 luma block.
  */
 export function getAdaptiveMagnitude(luma: Float32Array): number {
@@ -558,18 +571,7 @@ export function getAdaptiveMagnitude(luma: Float32Array): number {
     );
   }
 
-  if (variance > BLOCK_VAR_HIGH_CONTRAST_GT) {
-    return EMBED_MAG_GAP_EDGE_CONTRAST;
-  }
-
-  if (yAvg < LUMA_AVG_SHADOW_MAX) {
-    return EMBED_MAG_GAP_LUMA_EXTREME;
-  }
-
-  if (variance < BLOCK_VAR_SMOOTH_LT) {
-    return EMBED_MAG_GAP_SMOOTH;
-  }
-  return EMBED_MAG_GAP_TEXTURED;
+  return clampDarkZoneMag(EMBED_MAG_GAP_DARK_ZONE);
 }
 
 function collapsedBitsAlignedForMagicHex(

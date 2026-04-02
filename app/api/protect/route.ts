@@ -17,12 +17,13 @@ const MAX_REMOTE_IMAGE_BYTES = 25 * 1024 * 1024;
 
 /**
  * 1:1 pipeline: no resize while **max(width,height) ≤** this (e.g. **~2000px** assets unchanged).
+ * **Audit:** must remain **8192** — never **800** / **1000** (old downscale caused grid moiré).
  */
 const MAX_IMAGE_DIMENSION = 8192;
 
 /**
- * Final encode is **lossless PNG** (no JPEG quality knob on this path). Input JPEGs are decoded at full fidelity by Sharp/libvips.
- * If you re-save the download as JPEG elsewhere, use **quality ≥ 95** and **4:4:4** chroma when your encoder supports it.
+ * Protect output: **strictly lossless PNG** (DEFLATE). `compressionLevel` only changes file size — **pixel values are bit-identical** to the embedded RGBA.
+ * Input JPEGs are decoded at full fidelity by Sharp/libvips. Re-saving as JPEG elsewhere is optional and lossy.
  */
 
 /** Faster JPEG/TIFF decode; avoid random access when possible. */
@@ -127,6 +128,7 @@ async function respondProtectedImage(
 
     embedMemberIdDctInBitmap(data, width, height, embeddedId);
 
+    // Lossless PNG: no chroma subsampling, no JPEG — DEFLATE level 9 is size-only.
     const body = await sharp(data, {
       raw: { width, height, channels: 4 },
     })
@@ -141,7 +143,7 @@ async function respondProtectedImage(
       "X-Content-Type-Options": "nosniff",
       "Cache-Control": "no-cache",
       "X-Creator-Guard-Embed-Source": idSource,
-      "X-Creator-Guard-Version": "V5.2-GOLD",
+      "X-Creator-Guard-Version": "V5.4-ULTRA-CLEAR",
     };
     if (opts?.forceDownload) {
       const baseName = safeDownloadBaseName(embeddedId);
@@ -183,6 +185,7 @@ function formUploadLooksLikeImage(file: File): boolean {
 }
 
 export async function POST(request: NextRequest) {
+  console.log("!!! V5.4 PIPELINE STARTING !!!");
   let formData: FormData;
   try {
     formData = await request.formData();
