@@ -32,8 +32,8 @@ export interface WatermarkVerifyExtractDebug {
 
 /**
  * Creator Guard — DCT v4 (production embed) / v3 (legacy extract)
- * **V7.0 FINAL-BREAKTHROUGH:** Float BT.601 **luma**; **`variance < 5` → no embed**; **`5 ≤ variance < 150` → ghost Mag 4**;
- * **`variance ≥ 150`:** full adaptive tiers; cross-block dither; skip **pre-flatten α=0** / **`Y > 245`**; **`Math.round` at write**. **Hamming(7,4)** (v4).
+ * **V7.1 GHOST-REVEAL:** Stronger SNR (ghost **10**, dark **15**); **`variance < 10` → no embed**; **`10 ≤ variance < 150` → ghost**;
+ * **`variance ≥ 150`:** bright tiers; cross-block dither; **α=0** / **`Y > 245`** skip; **Hamming(7,4)** (v4).
  */
 export const WATERMARK_MAGIC_V3 = Buffer.from([0x43, 0x47, 0x57, 0x03]);
 /** v4: same CGW prefix, `0x04` = Hamming-wrapped UTF-8 ID after header. */
@@ -86,9 +86,9 @@ const BRIGHT_ULTRA_WHITE_Y = 240;
 const BRIGHT_RAMP_MAG_TOP = 2;
 const BRIGHT_RAMP_MAG_LO = 1;
 /**
- * **Smooth skip:** variance below this ⇒ **Mag 0** (V7.0: **5** — almost no skip; near-solid only).
+ * **Smooth skip:** variance below this ⇒ **Mag 0** (V7.1: **10**).
  */
-const BLOCK_VAR_SMOOTH_LT = 5;
+const BLOCK_VAR_SMOOTH_LT = 10;
 /**
  * Below this (and ≥ smooth): **ghost embed** fixed **Mag 4** — capacity without visible grid.
  */
@@ -105,12 +105,12 @@ const EMBED_MAG_GAP_LUMA_EXTREME = 8;
 const EMBED_MAG_GAP_SMOOTH = 8;
 /** Bright high-contrast 8×8 (`yAvg > 140`, `variance > 500`) — V5.5 down from **25**. */
 const EMBED_MAG_GAP_EDGE_CONTRAST = 10;
-/** Low-texture band **`[BLOCK_VAR_SMOOTH_LT, BLOCK_VAR_LOW_TEXTURE_LT)`** — ultra-weak **ghost** gap (Mag 4). */
-const EMBED_MAG_GAP_GHOST_LOW_TEXTURE = 4;
-/** V5.5: **all** **`yAvg ≤ 140`** (was **8**). */
-const EMBED_MAG_GAP_DARK_ZONE = 3;
-const DARK_ZONE_MAG_CLAMP_MIN = 2;
-const DARK_ZONE_MAG_CLAMP_MAX = 4;
+/** Low-texture band **`[BLOCK_VAR_SMOOTH_LT, BLOCK_VAR_LOW_TEXTURE_LT)`** — ghost gap (V7.1: **10**, higher SNR). */
+const EMBED_MAG_GAP_GHOST_LOW_TEXTURE = 10;
+/** **`yAvg ≤ 140`** dark zone target (V7.1: **15**); clamp range must allow it. */
+const EMBED_MAG_GAP_DARK_ZONE = 15;
+const DARK_ZONE_MAG_CLAMP_MIN = 10;
+const DARK_ZONE_MAG_CLAMP_MAX = 20;
 /** Fallback when primary target cannot be met after clamp (step toward weaker gap). */
 const EMBED_MAG_GAP_RELAXED_STEP = 8;
 /** Last resort rung below `EMBED_MAG_GAP_LUMA_EXTREME` when primary is already 8. */
@@ -120,8 +120,8 @@ const GAP_ENFORCE_MAX_STEPS = 192;
 
 /**
  * Signed gap `|A|−|B|` vs ±threshold for bit 1 / 0; tie band uses sign of gap.
- * **`magTarget === 0`** (smooth block, no embed) → **1**; **`magTarget < 8`** → **1**; **`8 ≤ magTarget < 14`** → **2**.
- * **`≥14`** → **3**, **`≥18`** → **5**. Deep-scan **`bias -1`** can reach **0** when base **t === 1**.
+ * **`magTarget === 0`** → **1**; **`magTarget < 8`** → **1**; **`8 ≤ magTarget < 14`** → **2** (V7.1: covers **ghost Mag 10**).
+ * **`≥14`** → **3** (dark **15**), **`≥18`** → **5**. Deep-scan **`bias -1`** can reach **0** when base **t === 1**.
  */
 export function extractBitThresholdForMagTarget(
   magTarget: number,
@@ -541,8 +541,8 @@ function clampDarkZoneMag(m: number): number {
 }
 
 /**
- * Per-block perceptual magnitude (DCT gap). **V7.0:** **`variance < 5` → 0**; **`5 ≤ variance < 150` → 4** (ghost);
- * **`variance ≥ 150`:** bright ramp / edges / dark zone (V5.5-style).
+ * Per-block perceptual magnitude (DCT gap). **V7.1:** **`variance < 10` → 0**; **`10 ≤ variance < 150` → ghost 10**;
+ * **`variance ≥ 150`:** bright ramp / edges; dark **`yAvg ≤ 140` → 15** (clamped).
  */
 export function getAdaptiveMagnitude(luma: Float32Array): number {
   let sum = 0;
@@ -740,7 +740,7 @@ function idct8x8(coeffs: Float32Array): Float32Array {
   return out;
 }
 
-/** V7.0: BT.601 luma in **Float32** for DCT (no early integer quant). */
+/** V7.1: BT.601 luma in **Float32** for DCT (no early integer quant). */
 function bt601LumaFloatFromRgb(r: number, g: number, b: number): number {
   const rf = Math.max(0, Math.min(255, +r));
   const gf = Math.max(0, Math.min(255, +g));
@@ -765,7 +765,7 @@ function captureFullyTransparentSkipMask(
   return mask;
 }
 
-/** Near-white / **#FFFFFF** red line in BT.601 luma (V7.0: **245** unlocks near-white texture). */
+/** Near-white / **#FFFFFF** red line in BT.601 luma (**245** — near-white texture unlock). */
 const PURE_SILK_LUMA_SKIP = 245;
 
 /** Skip: **pre-flatten fully transparent** (mask) or **luma > PURE_SILK_LUMA_SKIP**. */

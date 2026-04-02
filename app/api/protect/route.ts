@@ -155,7 +155,7 @@ async function respondProtectedImage(
       "X-Content-Type-Options": "nosniff",
       "Cache-Control": "no-cache",
       "X-Creator-Guard-Embed-Source": idSource,
-      "X-Creator-Guard-Version": "V7.0-FINAL-BREAKTHROUGH",
+      "X-Creator-Guard-Version": "V7.1-GHOST-REVEAL",
     };
     if (isBestEffort) {
       headers["X-Creator-Guard-Best-Effort"] = "capacity_no_watermark";
