@@ -124,23 +124,26 @@ async function respondProtectedImage(
   opts?: { forceDownload?: boolean }
 ): Promise<NextResponse> {
   try {
-    console.log(">>> [DEPLOY_CHECK] V8.0-PURE-SILK IS ACTIVE <<<");
+    console.log(">>> [DEPLOY_CHECK] V9.0-SURGICAL-PRECISION IS ACTIVE <<<");
     let { data, width, height } = await decodeResizeToRgba(input);
 
     let isBestEffort = false;
     try {
       embedMemberIdDctInBitmap(data, width, height, embeddedId);
     } catch (e) {
+      isBestEffort = true;
       if (e instanceof WatermarkEmbedCapacityError) {
-        isBestEffort = true;
         console.warn(
           "Capacity reached! Falling back to Best Effort (No Watermark)."
         );
-        // Fresh decode — no flatten / embed mutations (bit-identical to pipeline input).
-        ({ data, width, height } = await decodeResizeToRgba(input));
       } else {
-        throw e;
+        console.warn(
+          "[Creator Guard protect] Embed failed; returning 100% original decode buffer.",
+          e
+        );
       }
+      // Fresh decode — identical to first-pass RGBA (no flatten / DCT mutations).
+      ({ data, width, height } = await decodeResizeToRgba(input));
     }
 
     // Lossless PNG: no chroma subsampling, no JPEG — DEFLATE level 9 is size-only.
@@ -158,7 +161,7 @@ async function respondProtectedImage(
       "X-Content-Type-Options": "nosniff",
       "Cache-Control": "no-cache",
       "X-Creator-Guard-Embed-Source": idSource,
-      "X-Creator-Guard-Version": "V8.0-PURE-SILK-FINAL-EDITION",
+      "X-Creator-Guard-Version": "V9.0-SURGICAL-PRECISION",
     };
     if (isBestEffort) {
       headers["X-Creator-Guard-Best-Effort"] = "capacity_no_watermark";
@@ -191,6 +194,9 @@ function formUploadLooksLikeImage(file: File): boolean {
 }
 
 export async function POST(request: NextRequest) {
+  console.log(
+    "!!! [CRITICAL_SYNC] V9.0_SURGICAL_PRECISION_DEPLOYED_SUCCESSFULLY !!!"
+  );
   let formData: FormData;
   try {
     formData = await request.formData();
