@@ -143,7 +143,7 @@ async function respondProtectedImage(
       "X-Content-Type-Options": "nosniff",
       "Cache-Control": "no-cache",
       "X-Creator-Guard-Embed-Source": idSource,
-      "X-Creator-Guard-Version": "V5.4-ULTRA-CLEAR",
+      "X-Creator-Guard-Version": "V6.0-PURE-SILK",
     };
     if (opts?.forceDownload) {
       const baseName = safeDownloadBaseName(embeddedId);
@@ -185,7 +185,6 @@ function formUploadLooksLikeImage(file: File): boolean {
 }
 
 export async function POST(request: NextRequest) {
-  console.log("!!! V5.4 PIPELINE STARTING !!!");
   let formData: FormData;
   try {
     formData = await request.formData();

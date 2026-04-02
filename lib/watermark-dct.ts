@@ -32,9 +32,8 @@ export interface WatermarkVerifyExtractDebug {
 
 /**
  * Creator Guard — DCT v4 (production embed) / v3 (legacy extract)
- * Cyclic **sparse** interior blocks (odd bx+by checkerboard + central 70% only), BT.601 luma,
- * **mid-diagonal** DCT (2,3) vs (3,2), 5× Steel redundancy (**10×** on the first 32 logical bits = 4-byte magic),
- * texture-adaptive magnitude gap, **Hamming(7,4)** on the ID body (v4), magnitude gap decode.
+ * **V6.0 PURE-SILK:** Float BT.601 **luma** (YCbCr-style weights, luma-only); **`variance < 100` → no embed**;
+ * cross-block seam dither; skip **alpha 0** / **#FFFFFF**; RGB **`Math.round` only at write**. Sparse DCT, Steel, **Hamming(7,4)** (v4).
  */
 export const WATERMARK_MAGIC_V3 = Buffer.from([0x43, 0x47, 0x57, 0x03]);
 /** v4: same CGW prefix, `0x04` = Hamming-wrapped UTF-8 ID after header. */
@@ -75,35 +74,37 @@ const EMBED_SCALE_GROWTH = 1.12;
  * **Adaptive perceptual masking** via `getAdaptiveMagnitude` (HVS): weak in shadows/highlights
  * and smooth regions; strong in textured areas. Relaxed pass uses a lower floor if primary fails.
  */
-/** Below this mean luma → shadow protection mag **8**. */
+/** Below this mean luma (unused tier split; dark zone is unified). */
 const LUMA_AVG_SHADOW_MAX = 40;
-/** Blocks with **`yAvg >` this** use the bright luma ramp (before variance tiering when **`variance ≤ 500`**). */
+/** Bright smooth luma floor (**`variance ≤ 500`** path). */
 const BRIGHT_RAMP_Y_LO = 140;
-/** End of linear segment; **`Y >` this** → flat **pure white** mag (**2**). */
-const BRIGHT_RAMP_Y_HI = 250;
-/** Mag at **`Y` just above `BRIGHT_RAMP_Y_LO`** (top of linen / light ramp). */
-const BRIGHT_RAMP_MAG_TOP = 6;
-/** Smooth vs textured split (population variance of 8×8 BT.601 luma). */
+/** **`Y >` this** → flat **Mag 1** (skin/sky) until ultra-white luma. */
+const BRIGHT_RAMP_SKY_Y = 180;
+/** **`Y >` this** → **Mag 0.5** near-white (float gap target). */
+const BRIGHT_ULTRA_WHITE_Y = 240;
+/** Ramp high at **`Y` just above `BRIGHT_RAMP_Y_LO`** (V5.5: **2 → 1** to **`BRIGHT_RAMP_SKY_Y`**). */
+const BRIGHT_RAMP_MAG_TOP = 2;
+const BRIGHT_RAMP_MAG_LO = 1;
+/**
+ * **Texture-only embed:** variance below this ⇒ **Mag 0** (smooth / pure background — no DCT touch).
+ */
 const BLOCK_VAR_SMOOTH_LT = 100;
-/** Above this variance → high-contrast edge (e.g. logo boundary). On **`Y > 140`** blocks, linen/texture must stay below this to use the bright ramp only. */
+/** Above this variance → edge tier (**bright** only uses **Mag 10** in V5.5). */
 const BLOCK_VAR_HIGH_CONTRAST_GT = 500;
 
-/**
- * Pure white / **`Y > 250`** (non-edge): minimum practical gap; 10× redundancy on magic absorbs BER cost.
- */
-const EMBED_MAG_GAP_PURE_WHITE = 2;
+/** Near-white **`Y > 240`**: minimum float gap (keen-eye invisibility). */
+const EMBED_MAG_GAP_ULTRA_WHITE = 0.5;
+/** **`Y > 180`** (non-edge): flat **Mag 1**. */
+const EMBED_MAG_GAP_BRIGHT_SKY = 1;
 const EMBED_MAG_GAP_LUMA_EXTREME = 8;
-/** Skin / flat mid-luma smooth tier (was 10). */
+/** Skin / flat mid-luma smooth tier (legacy default in helpers). */
 const EMBED_MAG_GAP_SMOOTH = 8;
-/** Logo-edge / high-contrast on **bright** blocks only (`yAvg > 140`, `variance > 500`). */
-const EMBED_MAG_GAP_EDGE_CONTRAST = 25;
-/**
- * V5.3 photography-grade dark zone: **all** **`yAvg ≤ 140`** → this target (no Mag **20** textured / **25** high-variance dark).
- * Includes **`variance > 500`** dark “texture/edge” blocks (formerly **25**) and busy grass (**formerly 20**).
- */
-const EMBED_MAG_GAP_DARK_ZONE = 8;
-const DARK_ZONE_MAG_CLAMP_MIN = 6;
-const DARK_ZONE_MAG_CLAMP_MAX = 12;
+/** Bright high-contrast 8×8 (`yAvg > 140`, `variance > 500`) — V5.5 down from **25**. */
+const EMBED_MAG_GAP_EDGE_CONTRAST = 10;
+/** V5.5: **all** **`yAvg ≤ 140`** (was **8**). */
+const EMBED_MAG_GAP_DARK_ZONE = 3;
+const DARK_ZONE_MAG_CLAMP_MIN = 2;
+const DARK_ZONE_MAG_CLAMP_MAX = 4;
 /** Fallback when primary target cannot be met after clamp (step toward weaker gap). */
 const EMBED_MAG_GAP_RELAXED_STEP = 8;
 /** Last resort rung below `EMBED_MAG_GAP_LUMA_EXTREME` when primary is already 8. */
@@ -113,8 +114,8 @@ const GAP_ENFORCE_MAX_STEPS = 192;
 
 /**
  * Signed gap `|A|−|B|` vs ±threshold for bit 1 / 0; tie band uses sign of gap.
- * **`magTarget < 8`** (e.g. gold ramp **2–6**) → **1**; **`8 ≤ magTarget < 14`** → **2**.
- * **`≥14`** → **3**, **`≥18`** → **5** (bright edge **25**). Dark zone **`≤ 12`**. Deep-scan **`bias -1`** can reach **0** when base **t === 1**.
+ * **`magTarget === 0`** (smooth block, no embed) → **1**; **`magTarget < 8`** → **1**; **`8 ≤ magTarget < 14`** → **2**.
+ * **`≥14`** → **3**, **`≥18`** → **5**. Deep-scan **`bias -1`** can reach **0** when base **t === 1**.
  */
 export function extractBitThresholdForMagTarget(
   magTarget: number,
@@ -534,10 +535,8 @@ function clampDarkZoneMag(m: number): number {
 }
 
 /**
- * Per-block perceptual magnitude target (DCT gap).
- * **Bright (`yAvg > 140`):** master ramp **6 → 2** (pure white **2**), edges **`variance > 500` → 25**.
- * **`yAvg ≤ 140`:** unified **Mag 8** (clamp **[6, 12]**) — shadows, smooth dark, textured dark, **`variance > 500`** dark.
- * Independent of embedded **Member ID** / **userId** — uses only the 8×8 luma block.
+ * Per-block perceptual magnitude (DCT gap). **V6 texture-only:** **`variance < 100` → 0** (no embed).
+ * Else bright ramp / edges / dark zone (V5.5-style tiers). Float luma in, **no** change on smooth tiles.
  */
 export function getAdaptiveMagnitude(luma: Float32Array): number {
   let sum = 0;
@@ -551,22 +550,28 @@ export function getAdaptiveMagnitude(luma: Float32Array): number {
   }
   const variance = varAcc * (1 / 64);
 
+  if (variance < BLOCK_VAR_SMOOTH_LT) {
+    return 0;
+  }
+
   if (yAvg > BRIGHT_RAMP_Y_LO) {
     if (variance > BLOCK_VAR_HIGH_CONTRAST_GT) {
       return EMBED_MAG_GAP_EDGE_CONTRAST;
     }
-    if (yAvg > BRIGHT_RAMP_Y_HI) {
-      return EMBED_MAG_GAP_PURE_WHITE;
+    if (yAvg > BRIGHT_ULTRA_WHITE_Y) {
+      return EMBED_MAG_GAP_ULTRA_WHITE;
     }
-    // mag = 6 - (yAvg - 140) * (4/110); span 250-140 = 110, drop 6-2 = 4
+    if (yAvg > BRIGHT_RAMP_SKY_Y) {
+      return EMBED_MAG_GAP_BRIGHT_SKY;
+    }
+    const span = BRIGHT_RAMP_SKY_Y - BRIGHT_RAMP_Y_LO;
     const ramp = Math.round(
       BRIGHT_RAMP_MAG_TOP -
-        (yAvg - BRIGHT_RAMP_Y_LO) *
-          ((BRIGHT_RAMP_MAG_TOP - EMBED_MAG_GAP_PURE_WHITE) /
-            (BRIGHT_RAMP_Y_HI - BRIGHT_RAMP_Y_LO))
+        ((yAvg - BRIGHT_RAMP_Y_LO) / span) *
+          (BRIGHT_RAMP_MAG_TOP - BRIGHT_RAMP_MAG_LO)
     );
     return Math.min(
-      Math.max(ramp, EMBED_MAG_GAP_PURE_WHITE),
+      Math.max(ramp, BRIGHT_RAMP_MAG_LO),
       BRIGHT_RAMP_MAG_TOP
     );
   }
@@ -725,17 +730,82 @@ function idct8x8(coeffs: Float32Array): Float32Array {
   return out;
 }
 
+/** V6.0 PURE-SILK: BT.601 luma in **Float32 path** for DCT (no early integer quant). */
+function bt601LumaFloatFromRgb(r: number, g: number, b: number): number {
+  const rf = Math.max(0, Math.min(255, +r));
+  const gf = Math.max(0, Math.min(255, +g));
+  const bf = Math.max(0, Math.min(255, +b));
+  return 0.299 * rf + 0.587 * gf + 0.114 * bf;
+}
+
 /**
- * BT.601 luma: `round((77*r + 150*g + 29*b) / 256)` — closer to browser float Y than `>> 8` trunc.
+ * Before `flattenBitmapToOpaqueRgb`: mark pixels that were **fully transparent** so we never
+ * write DCT deltas there after they become black.
  */
-function bt601LumaFromRgb(r: number, g: number, b: number): number {
-  const ri = r | 0;
-  const gi = g | 0;
-  const bi = b | 0;
-  return Math.min(
-    255,
-    Math.max(0, Math.round((77 * ri + 150 * gi + 29 * bi) / 256))
-  );
+function captureFullyTransparentSkipMask(
+  data: Buffer,
+  width: number,
+  height: number
+): Uint8Array {
+  const n = width * height;
+  const mask = new Uint8Array(n);
+  for (let i = 0; i < n; i++) {
+    if (data[i * 4 + 3]! === 0) mask[i] = 1;
+  }
+  return mask;
+}
+
+/** Hard skip: **pre-flatten fully transparent** (see mask) or exact **#FFFFFF**. */
+function pixelSkipSilkEmbed(
+  data: Buffer,
+  o: number,
+  transparentSkip?: Uint8Array | null
+): boolean {
+  const pi = o >>> 2;
+  if (transparentSkip != null && transparentSkip[pi]) return true;
+  const r = data[o]!;
+  const g = data[o + 1]!;
+  const b = data[o + 2]!;
+  return r === 255 && g === 255 && b === 255;
+}
+
+/** Per-block edge phase (deterministic). */
+function blockEdgeDitherScale(bx: number, by: number, dx: number, dy: number): number {
+  const edge = dx === 0 || dx === 7 || dy === 0 || dy === 7;
+  if (!edge) return 1;
+  const h =
+    (bx * 374761393 + by * 668265263 + dx * 224682251 + dy * 326648991) >>> 0;
+  return 0.78 + 0.2 * (h / 4294967295);
+}
+
+/** Average taper with **adjacent 8×8 blocks** at shared seams — cross-block dither. */
+function crossBlockDitherScale(
+  bx: number,
+  by: number,
+  dx: number,
+  dy: number,
+  width: number,
+  height: number
+): number {
+  let sum = blockEdgeDitherScale(bx, by, dx, dy);
+  let n = 1;
+  if (dx === 0 && bx > 0) {
+    sum += blockEdgeDitherScale(bx - 1, by, 7, dy);
+    n++;
+  }
+  if (dx === 7 && bx * 8 + 8 < width) {
+    sum += blockEdgeDitherScale(bx + 1, by, 0, dy);
+    n++;
+  }
+  if (dy === 0 && by > 0) {
+    sum += blockEdgeDitherScale(bx, by - 1, dx, 7);
+    n++;
+  }
+  if (dy === 7 && by * 8 + 8 < height) {
+    sum += blockEdgeDitherScale(bx, by + 1, dx, 0);
+    n++;
+  }
+  return sum / n;
 }
 
 /** 8×8 luma into `out` (length ≥ 64); layout x*8+y matches dct8x8. */
@@ -757,7 +827,7 @@ function readLumaBlockInto(
         continue;
       }
       const o = (y * width + x) * 4;
-      out[i++] = bt601LumaFromRgb(data[o]!, data[o + 1]!, data[o + 2]!);
+      out[i++] = bt601LumaFloatFromRgb(data[o]!, data[o + 1]!, data[o + 2]!);
     }
   }
 }
@@ -782,7 +852,11 @@ function applyBlockDeltaToRgb(
   bx: number,
   by: number,
   delta: Float32Array,
-  opts?: { targetBit?: number; magGapTarget?: number }
+  opts?: {
+    targetBit?: number;
+    magGapTarget?: number;
+    transparentSkip?: Uint8Array | null;
+  }
 ): void {
   let i = 0;
   for (let dx = 0; dx < 8; dx++) {
@@ -795,9 +869,19 @@ function applyBlockDeltaToRgb(
       }
       const o = (y * width + x) * 4;
       const d = delta[i++]!;
-      data[o] = Math.max(0, Math.min(255, Math.round(data[o]! + d)));
-      data[o + 1] = Math.max(0, Math.min(255, Math.round(data[o + 1]! + d)));
-      data[o + 2] = Math.max(0, Math.min(255, Math.round(data[o + 2]! + d)));
+      const r0 = data[o]!;
+      const g0 = data[o + 1]!;
+      const b0 = data[o + 2]!;
+      if (pixelSkipSilkEmbed(data, o, opts?.transparentSkip)) {
+        continue;
+      }
+      const dd = d * crossBlockDitherScale(bx, by, dx, dy, width, height);
+      const rf = r0 + dd;
+      const gf = g0 + dd;
+      const bf = b0 + dd;
+      data[o] = Math.max(0, Math.min(255, Math.round(rf)));
+      data[o + 1] = Math.max(0, Math.min(255, Math.round(gf)));
+      data[o + 2] = Math.max(0, Math.min(255, Math.round(bf)));
       data[o + 3] = 255;
     }
   }
@@ -814,7 +898,16 @@ function applyBlockDeltaToRgb(
       const ok =
         tb === 1 ? mg >= gapT : mg <= -gapT;
       if (ok && readBitFromBlock(data, width, height, bx, by) === tb) break;
-      enforceMinDctGapAfterClamp(data, width, height, bx, by, tb, gapT);
+      enforceMinDctGapAfterClamp(
+        data,
+        width,
+        height,
+        bx,
+        by,
+        tb,
+        gapT,
+        opts?.transparentSkip
+      );
     }
   }
 }
@@ -882,7 +975,8 @@ function bumpBlockRgbUniform(
   height: number,
   bx: number,
   by: number,
-  delta: -1 | 1
+  delta: -1 | 1,
+  transparentSkip?: Uint8Array | null
 ): boolean {
   let changed = false;
   for (let dx = 0; dx < 8; dx++) {
@@ -891,6 +985,7 @@ function bumpBlockRgbUniform(
       const y = by * 8 + dy;
       if (x < 0 || x >= width || y < 0 || y >= height) continue;
       const o = (y * width + x) * 4;
+      if (pixelSkipSilkEmbed(data, o, transparentSkip)) continue;
       const r = data[o]!;
       const g = data[o + 1]!;
       const b = data[o + 2]!;
@@ -947,7 +1042,8 @@ function enforceMinDctGapAfterClamp(
   bx: number,
   by: number,
   bit: number,
-  magGapTarget: number
+  magGapTarget: number,
+  transparentSkip?: Uint8Array | null
 ): void {
   const snap = new Uint8Array(64 * 3);
 
@@ -959,7 +1055,8 @@ function enforceMinDctGapAfterClamp(
 
     copyBlockRgb(data, width, height, bx, by, snap);
     const dir = (bit === 1 ? 1 : -1) as -1 | 1;
-    if (!bumpBlockRgbUniform(data, width, height, bx, by, dir)) return;
+    if (!bumpBlockRgbUniform(data, width, height, bx, by, dir, transparentSkip))
+      return;
 
     if (readBitFromBlock(data, width, height, bx, by) !== bit) {
       pasteBlockRgb(data, width, height, bx, by, snap);
@@ -1046,7 +1143,7 @@ function blockIndexToCoords(
 /**
  * Vercel-speed path: **skip ~50%** of interior blocks (even `bx+by`), and only blocks whose
  * center pixel lies in the **middle 70%** of width/height (15% margin each edge).
- * Embed/extract share the same ordered index list `0..embedBlockCount-1` for the physical stream.
+ * **V6:** `filterSparseToTextureEmbedBlocks` then drops smooth tiles; embed/extract share that ordered list.
  */
 function blockEligibleForSparseEmbed(
   bx: number,
@@ -1082,13 +1179,34 @@ function buildSparseEmbedBlockIndices(
   return out;
 }
 
+/** Same order as `sparseK`; drop **smooth** blocks (`variance < 100` ⇒ mag 0). Embed/extract must share this list. */
+function filterSparseToTextureEmbedBlocks(
+  data: Buffer,
+  width: number,
+  height: number,
+  bw: number,
+  sparseK: number[]
+): number[] {
+  const scratch = new Float32Array(64);
+  const out: number[] = [];
+  for (const k of sparseK) {
+    const { bx, by } = blockIndexToCoords(k, bw);
+    readLumaBlockInto(data, width, height, bx, by, scratch);
+    if (getAdaptiveMagnitude(scratch) !== 0) {
+      out.push(k);
+    }
+  }
+  return out;
+}
+
 function embedBitInBlock(
   data: Buffer,
   width: number,
   height: number,
   bx: number,
   by: number,
-  bit: number
+  bit: number,
+  transparentSkip?: Uint8Array | null
 ): void {
   const saved = new Uint8Array(64 * 3);
   copyBlockRgb(data, width, height, bx, by, saved);
@@ -1100,6 +1218,9 @@ function embedBitInBlock(
 
   readLumaBlockInto(data, width, height, bx, by, luma);
   const magPrimary = getAdaptiveMagnitude(luma);
+  if (magPrimary === 0) {
+    return;
+  }
 
   function attemptWithMagGapTarget(magGapTarget: number): boolean {
     let scale = 1;
@@ -1125,6 +1246,7 @@ function embedBitInBlock(
       applyBlockDeltaToRgb(data, width, height, bx, by, delta, {
         targetBit: bit,
         magGapTarget,
+        transparentSkip,
       });
 
       if (
@@ -1800,6 +1922,7 @@ export function embedMemberIdDctInBitmap(
   height: number,
   userId: string
 ): void {
+  const transparentSkip = captureFullyTransparentSkipMask(data, width, height);
   flattenBitmapToOpaqueRgb({ data, width, height });
 
   if (height < MIN_EMBED_HEIGHT_PX) {
@@ -1828,12 +1951,19 @@ export function embedMemberIdDctInBitmap(
   const expandedBits = tripleExpandV4PayloadBits(logicalBits);
   const Lphy = expandedBits.length;
   const { bw, bh, count, fullBw, fullBh } = blockGridDims(width, height);
-  const sparseK = buildSparseEmbedBlockIndices(width, height, bw, bh);
+  const sparseAll = buildSparseEmbedBlockIndices(width, height, bw, bh);
+  const sparseK = filterSparseToTextureEmbedBlocks(
+    data,
+    width,
+    height,
+    bw,
+    sparseAll
+  );
   const embedBlockCount = sparseK.length;
 
   if (embedBlockCount < Lphy) {
     throw new WatermarkEmbedCapacityError(
-      `Image too small for sparse DCT watermark: need at least ${Lphy} eligible 8×8 blocks (checkerboard + central 70%, Steel ${PHYSICAL_REDUNDANCY}×), have ${embedBlockCount} (full interior ${count}; ${bw}×${bh}; full grid ${fullBw}×${fullBh})`,
+      `Image too small for texture-only DCT watermark: need at least ${Lphy} textured 8×8 blocks (variance ≥ ${BLOCK_VAR_SMOOTH_LT}, checkerboard + central 70%), have ${embedBlockCount} (sparse candidates ${sparseAll.length}; full interior ${count}; ${bw}×${bh})`,
       Lphy,
       embedBlockCount
     );
@@ -1843,7 +1973,7 @@ export function embedMemberIdDctInBitmap(
     const k = sparseK[i]!;
     const { bx, by } = blockIndexToCoords(k, bw);
     const bit = expandedBits[i % Lphy]!;
-    embedBitInBlock(data, width, height, bx, by, bit);
+    embedBitInBlock(data, width, height, bx, by, bit, transparentSkip);
   }
 
   enforceBitmapOpaque(data, width, height);
@@ -1892,7 +2022,14 @@ export function extractMemberIdDctDetailed(
   enforceBitmapOpaque(data, width, height);
 
   const { bw, bh, count, fullBw, fullBh } = blockGridDims(width, height);
-  const sparseK = buildSparseEmbedBlockIndices(width, height, bw, bh);
+  const sparseAll = buildSparseEmbedBlockIndices(width, height, bw, bh);
+  const sparseK = filterSparseToTextureEmbedBlocks(
+    data,
+    width,
+    height,
+    bw,
+    sparseAll
+  );
   const embedBlockCount = sparseK.length;
 
   if (width < 16 || height < 16 || count === 0 || embedBlockCount === 0) {
