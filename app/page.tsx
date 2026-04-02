@@ -625,6 +625,12 @@ export default function Home() {
               {t.homeHeroCtaPdfVerify}
             </Link>
           </div>
+          <a
+            href="/verify/pdf"
+            className="mt-5 inline-flex items-center justify-center rounded-xl border border-rose-400/40 bg-rose-500/15 px-5 py-3 text-center text-base font-bold text-rose-100 shadow-[0_0_24px_rgba(244,63,94,0.25)] transition hover:border-rose-300/60 hover:bg-rose-500/25 hover:text-white"
+          >
+            Go to Verify PDF (Find the Ghost)
+          </a>
         </header>
 
         <div className="space-y-6">

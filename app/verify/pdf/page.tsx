@@ -22,7 +22,7 @@ type ScanJson =
       producer: string | null;
     };
 
-export default function Page() {
+export default function VerifyPdfPage() {
   const { t } = useLanguage();
   const [dragOver, setDragOver] = useState(false);
   const [file, setFile] = useState<File | null>(null);
