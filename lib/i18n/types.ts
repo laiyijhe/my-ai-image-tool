@@ -115,4 +115,20 @@ export type Messages = {
   verifyErrDecodeFailed: string;
   verifyErrCapacity: string;
   verifyErrSyncOffset: string;
+  /** PDF fingerprint (Ghost Hunter) */
+  verifyPdfToolLink: string;
+  verifyPdfPageTitle: string;
+  verifyPdfPageSubtitle: string;
+  verifyPdfDropTitle: string;
+  verifyPdfMaxSize: string;
+  verifyPdfButton: string;
+  verifyPdfAnalyzing: string;
+  verifyPdfGhostDetected: string;
+  verifyPdfCleanDoc: string;
+  verifyPdfBuyerEmail: string;
+  verifyPdfMemberId: string;
+  verifyPdfTimestamp: string;
+  verifyPdfVersion: string;
+  verifyPdfNeedFile: string;
+  verifyPdfScanFailed: string;
 };

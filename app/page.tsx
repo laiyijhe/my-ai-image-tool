@@ -1204,12 +1204,18 @@ export default function Home() {
           />
         ) : null}
 
-        <footer className="mt-14 border-t border-white/[0.06] pt-10 text-center">
+        <footer className="mt-14 flex flex-wrap items-center justify-center gap-x-6 gap-y-3 border-t border-white/[0.06] pt-10 text-center">
           <Link
             href="/verify"
             className="text-sm font-medium text-cyan-400/80 transition hover:text-cyan-300"
           >
             {t.verifyToolLink}
+          </Link>
+          <Link
+            href="/verify/pdf"
+            className="text-sm font-medium text-rose-400/90 transition hover:text-rose-300"
+          >
+            {t.verifyPdfToolLink}
           </Link>
         </footer>
       </div>

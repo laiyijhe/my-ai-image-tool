@@ -24,6 +24,9 @@ export async function protectPdfWithCreatorGuard(
 ): Promise<Uint8Array> {
   const buyerEmail = normalizeBuyerEmail(opts.buyerEmail);
   const userId = (opts.userId?.trim() || buyerEmail).slice(0, 256);
+  const fingerprintTs = new Date().toISOString();
+  /** Forensic pipe token for `/verify/pdf` (Email|ID|TS). */
+  const pipeFingerprint = `CreatorGuard:${buyerEmail}|${userId}|${fingerprintTs}`;
 
   let pdfDoc: PDFDocument;
   try {
@@ -54,6 +57,7 @@ export async function protectPdfWithCreatorGuard(
     `Creator Guard licensed copy. Policy intent: disallow modification and content copying (enforce via encryption where available). Buyer: ${buyerEmail}.`
   );
   pdfDoc.setKeywords([
+    pipeFingerprint,
     `CreatorGuard:BuyerEmail=${buyerEmail}`,
     `CreatorGuard:UserId=${userId}`,
     `CreatorGuard:PolicyIntent=NoModify_NoContentCopy`,
