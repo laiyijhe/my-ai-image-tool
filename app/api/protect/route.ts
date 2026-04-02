@@ -126,7 +126,19 @@ async function respondProtectedImage(
   try {
     const { data, width, height } = await decodeResizeToRgba(input);
 
-    embedMemberIdDctInBitmap(data, width, height, embeddedId);
+    let isBestEffort = false;
+    try {
+      embedMemberIdDctInBitmap(data, width, height, embeddedId);
+    } catch (e) {
+      if (e instanceof WatermarkEmbedCapacityError) {
+        isBestEffort = true;
+        console.warn(
+          "Capacity reached! Falling back to Best Effort (No Watermark)."
+        );
+      } else {
+        throw e;
+      }
+    }
 
     // Lossless PNG: no chroma subsampling, no JPEG — DEFLATE level 9 is size-only.
     const body = await sharp(data, {
@@ -143,8 +155,11 @@ async function respondProtectedImage(
       "X-Content-Type-Options": "nosniff",
       "Cache-Control": "no-cache",
       "X-Creator-Guard-Embed-Source": idSource,
-      "X-Creator-Guard-Version": "V6.0-PURE-SILK",
+      "X-Creator-Guard-Version": "V7.0-FINAL-BREAKTHROUGH",
     };
+    if (isBestEffort) {
+      headers["X-Creator-Guard-Best-Effort"] = "capacity_no_watermark";
+    }
     if (opts?.forceDownload) {
       const baseName = safeDownloadBaseName(embeddedId);
       headers["Content-Disposition"] =
@@ -157,18 +172,6 @@ async function respondProtectedImage(
     });
   } catch (err) {
     console.error("[Creator Guard protect] watermark failed:", err);
-    if (err instanceof WatermarkEmbedCapacityError) {
-      return NextResponse.json(
-        {
-          code: err.code,
-          error: "capacity",
-          message: "Not enough image area to embed this Member ID.",
-          blocksNeeded: err.blocksNeeded,
-          blocksHave: err.blocksHave,
-        },
-        { status: 422 }
-      );
-    }
     return NextResponse.json(
       {
         error: "Image processing failed",

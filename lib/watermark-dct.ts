@@ -32,8 +32,8 @@ export interface WatermarkVerifyExtractDebug {
 
 /**
  * Creator Guard — DCT v4 (production embed) / v3 (legacy extract)
- * **V6.0 PURE-SILK:** Float BT.601 **luma** (YCbCr-style weights, luma-only); **`variance < 100` → no embed**;
- * cross-block seam dither; skip **alpha 0** / **#FFFFFF**; RGB **`Math.round` only at write**. Sparse DCT, Steel, **Hamming(7,4)** (v4).
+ * **V7.0 FINAL-BREAKTHROUGH:** Float BT.601 **luma**; **`variance < 5` → no embed**; **`5 ≤ variance < 150` → ghost Mag 4**;
+ * **`variance ≥ 150`:** full adaptive tiers; cross-block dither; skip **pre-flatten α=0** / **`Y > 245`**; **`Math.round` at write**. **Hamming(7,4)** (v4).
  */
 export const WATERMARK_MAGIC_V3 = Buffer.from([0x43, 0x47, 0x57, 0x03]);
 /** v4: same CGW prefix, `0x04` = Hamming-wrapped UTF-8 ID after header. */
@@ -86,9 +86,13 @@ const BRIGHT_ULTRA_WHITE_Y = 240;
 const BRIGHT_RAMP_MAG_TOP = 2;
 const BRIGHT_RAMP_MAG_LO = 1;
 /**
- * **Texture-only embed:** variance below this ⇒ **Mag 0** (smooth / pure background — no DCT touch).
+ * **Smooth skip:** variance below this ⇒ **Mag 0** (V7.0: **5** — almost no skip; near-solid only).
  */
-const BLOCK_VAR_SMOOTH_LT = 100;
+const BLOCK_VAR_SMOOTH_LT = 5;
+/**
+ * Below this (and ≥ smooth): **ghost embed** fixed **Mag 4** — capacity without visible grid.
+ */
+const BLOCK_VAR_LOW_TEXTURE_LT = 150;
 /** Above this variance → edge tier (**bright** only uses **Mag 10** in V5.5). */
 const BLOCK_VAR_HIGH_CONTRAST_GT = 500;
 
@@ -101,6 +105,8 @@ const EMBED_MAG_GAP_LUMA_EXTREME = 8;
 const EMBED_MAG_GAP_SMOOTH = 8;
 /** Bright high-contrast 8×8 (`yAvg > 140`, `variance > 500`) — V5.5 down from **25**. */
 const EMBED_MAG_GAP_EDGE_CONTRAST = 10;
+/** Low-texture band **`[BLOCK_VAR_SMOOTH_LT, BLOCK_VAR_LOW_TEXTURE_LT)`** — ultra-weak **ghost** gap (Mag 4). */
+const EMBED_MAG_GAP_GHOST_LOW_TEXTURE = 4;
 /** V5.5: **all** **`yAvg ≤ 140`** (was **8**). */
 const EMBED_MAG_GAP_DARK_ZONE = 3;
 const DARK_ZONE_MAG_CLAMP_MIN = 2;
@@ -535,8 +541,8 @@ function clampDarkZoneMag(m: number): number {
 }
 
 /**
- * Per-block perceptual magnitude (DCT gap). **V6 texture-only:** **`variance < 100` → 0** (no embed).
- * Else bright ramp / edges / dark zone (V5.5-style tiers). Float luma in, **no** change on smooth tiles.
+ * Per-block perceptual magnitude (DCT gap). **V7.0:** **`variance < 5` → 0**; **`5 ≤ variance < 150` → 4** (ghost);
+ * **`variance ≥ 150`:** bright ramp / edges / dark zone (V5.5-style).
  */
 export function getAdaptiveMagnitude(luma: Float32Array): number {
   let sum = 0;
@@ -552,6 +558,10 @@ export function getAdaptiveMagnitude(luma: Float32Array): number {
 
   if (variance < BLOCK_VAR_SMOOTH_LT) {
     return 0;
+  }
+
+  if (variance < BLOCK_VAR_LOW_TEXTURE_LT) {
+    return EMBED_MAG_GAP_GHOST_LOW_TEXTURE;
   }
 
   if (yAvg > BRIGHT_RAMP_Y_LO) {
@@ -730,7 +740,7 @@ function idct8x8(coeffs: Float32Array): Float32Array {
   return out;
 }
 
-/** V6.0 PURE-SILK: BT.601 luma in **Float32 path** for DCT (no early integer quant). */
+/** V7.0: BT.601 luma in **Float32** for DCT (no early integer quant). */
 function bt601LumaFloatFromRgb(r: number, g: number, b: number): number {
   const rf = Math.max(0, Math.min(255, +r));
   const gf = Math.max(0, Math.min(255, +g));
@@ -755,7 +765,10 @@ function captureFullyTransparentSkipMask(
   return mask;
 }
 
-/** Hard skip: **pre-flatten fully transparent** (see mask) or exact **#FFFFFF**. */
+/** Near-white / **#FFFFFF** red line in BT.601 luma (V7.0: **245** unlocks near-white texture). */
+const PURE_SILK_LUMA_SKIP = 245;
+
+/** Skip: **pre-flatten fully transparent** (mask) or **luma > PURE_SILK_LUMA_SKIP**. */
 function pixelSkipSilkEmbed(
   data: Buffer,
   o: number,
@@ -766,7 +779,7 @@ function pixelSkipSilkEmbed(
   const r = data[o]!;
   const g = data[o + 1]!;
   const b = data[o + 2]!;
-  return r === 255 && g === 255 && b === 255;
+  return bt601LumaFloatFromRgb(r, g, b) > PURE_SILK_LUMA_SKIP;
 }
 
 /** Per-block edge phase (deterministic). */
@@ -1179,7 +1192,7 @@ function buildSparseEmbedBlockIndices(
   return out;
 }
 
-/** Same order as `sparseK`; drop **smooth** blocks (`variance < 100` ⇒ mag 0). Embed/extract must share this list. */
+/** Same order as `sparseK`; drop **smooth** blocks (`variance < BLOCK_VAR_SMOOTH_LT` ⇒ mag 0). Embed/extract must share this list. */
 function filterSparseToTextureEmbedBlocks(
   data: Buffer,
   width: number,
