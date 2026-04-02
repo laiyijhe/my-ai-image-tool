@@ -610,6 +610,21 @@ export default function Home() {
           <p className="mx-auto mt-3 max-w-md text-sm leading-relaxed text-slate-500">
             {t.heroTagline}
           </p>
+
+          <div className="mx-auto mt-10 flex w-full max-w-2xl flex-col gap-4 sm:mt-12 sm:flex-row sm:items-stretch sm:justify-center sm:gap-6">
+            <Link
+              href="/protect/pdf"
+              className="flex min-h-[5.25rem] flex-1 items-center justify-center rounded-2xl bg-gradient-to-b from-cyan-200 via-cyan-400 to-teal-500 px-6 py-5 text-center text-xl font-extrabold tracking-tight text-slate-950 shadow-[0_0_48px_rgba(34,211,238,0.55)] ring-2 ring-cyan-100/70 transition hover:brightness-110 hover:shadow-[0_0_64px_rgba(34,211,238,0.65)] active:scale-[0.98] sm:text-2xl"
+            >
+              {t.homeHeroCtaPdfProtect}
+            </Link>
+            <Link
+              href="/verify/pdf"
+              className="flex min-h-[5.25rem] flex-1 items-center justify-center rounded-2xl bg-gradient-to-b from-rose-400 via-rose-500 to-red-600 px-6 py-5 text-center text-xl font-extrabold tracking-tight text-white shadow-[0_0_48px_rgba(244,63,94,0.55)] ring-2 ring-rose-200/60 transition hover:brightness-110 hover:shadow-[0_0_64px_rgba(244,63,94,0.65)] active:scale-[0.98] sm:text-2xl"
+            >
+              {t.homeHeroCtaPdfVerify}
+            </Link>
+          </div>
         </header>
 
         <div className="space-y-6">

@@ -41,6 +41,9 @@ export type Messages = {
   languageLabel: string;
   /** Simplified dashboard (Apple-style) */
   heroTagline: string;
+  /** Root hero — direct links to PDF tools (avoid 404 from deep links) */
+  homeHeroCtaPdfProtect: string;
+  homeHeroCtaPdfVerify: string;
   /** Short badge: frequency-domain / high-resistive watermark */
   highResistProtectionBadge: string;
   portalYourId: string;
