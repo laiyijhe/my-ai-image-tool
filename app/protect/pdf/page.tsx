@@ -4,18 +4,25 @@ import { BatchProgress } from "@/components/pdf-protect/BatchProgress";
 import { FileCard } from "@/components/pdf-protect/FileCard";
 import { LanguageSelector } from "@/components/LanguageSelector";
 import { useCgEmailGroups } from "@/hooks/useCgEmailGroups";
+import {
+  appendCgBatchHistory,
+  loadCgBatchHistory,
+  type CgBatchHistoryEntry,
+} from "@/lib/cg-batch-history";
 import { useLanguage } from "@/lib/i18n/language-context";
 import {
   PDF_BATCH_MAX_COMBOS,
   PDF_CLIENT_MAX_COMBOS,
+  emailListsMatch,
   parseEmailListFromRaw,
   protectedPdfZipEntryName,
   isPdfFileLike,
   safePdfFileName,
+  suggestGroupLabelFromRaw,
 } from "@/lib/pdf-protect-shared";
 import JSZip from "jszip";
 import Link from "next/link";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useDropzone } from "react-dropzone";
 
 function tpl(s: string, vars: Record<string, string>): string {
@@ -56,7 +63,7 @@ function MailLetterIcon({ className }: { className?: string }) {
 }
 
 export default function ProtectPdfPage() {
-  const { t } = useLanguage();
+  const { t, locale } = useLanguage();
   const { groups, hydrated, upsertGroup, removeGroup, sortedNames } =
     useCgEmailGroups();
 
@@ -94,6 +101,43 @@ export default function ProtectPdfPage() {
     useState(false);
   const [batchSendLog, setBatchSendLog] = useState<BatchLogRow[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [historyEntries, setHistoryEntries] = useState<CgBatchHistoryEntry[]>(
+    []
+  );
+  const [dismissedSaveTipKey, setDismissedSaveTipKey] = useState<string | null>(
+    null
+  );
+
+  useEffect(() => {
+    setHistoryEntries(loadCgBatchHistory());
+  }, []);
+
+  const historyLocaleTag = useMemo(() => {
+    if (locale === "zh-TW") return "zh-TW";
+    if (locale === "zh-CN") return "zh-CN";
+    if (locale === "ja") return "ja-JP";
+    if (locale === "ko") return "ko-KR";
+    return "en-US";
+  }, [locale]);
+
+  const formatHistoryAt = useCallback(
+    (iso: string) => {
+      const d = new Date(iso);
+      if (Number.isNaN(d.getTime())) return "";
+      return d.toLocaleString(historyLocaleTag, {
+        month: "short",
+        day: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+      });
+    },
+    [historyLocaleTag]
+  );
+
+  const recentThree = useMemo(
+    () => historyEntries.slice(0, 3),
+    [historyEntries]
+  );
 
   const onDrop = useCallback(
     (acceptedFiles: File[]) => {
@@ -121,6 +165,37 @@ export default function ProtectPdfPage() {
     () => parseEmailListFromRaw(emailListText),
     [emailListText]
   );
+
+  const emailsIdentityKey = useMemo(
+    () =>
+      [...parsedEmails].map((e) => e.toLowerCase()).sort().join("|"),
+    [parsedEmails]
+  );
+
+  const matchesSavedGroup = useMemo(() => {
+    if (parsedEmails.length === 0) return false;
+    return Object.values(groups).some((g) =>
+      emailListsMatch(parsedEmails, g)
+    );
+  }, [parsedEmails, groups]);
+
+  const suggestedLabel = useMemo(
+    () => suggestGroupLabelFromRaw(emailListText),
+    [emailListText]
+  );
+
+  const showSaveNewListTip =
+    parsedEmails.length > 0 &&
+    !matchesSavedGroup &&
+    dismissedSaveTipKey !== emailsIdentityKey &&
+    !loading;
+
+  const applyHistoryEntry = useCallback((entry: CgBatchHistoryEntry) => {
+    setEmailListText(entry.emails.join("\n"));
+    setSelectedGroupName(null);
+    setSelectValue("");
+    setError(null);
+  }, []);
 
   const comboCount = pdfFiles.length * parsedEmails.length;
   const emailsPerFile = parsedEmails.length;
@@ -168,6 +243,9 @@ export default function ProtectPdfPage() {
     setSelectedGroupName(name);
     setSelectValue(name);
     setNewGroupName("");
+    setDismissedSaveTipKey(
+      [...emails].map((e) => e.toLowerCase()).sort().join("|")
+    );
     setError(null);
   }, [emailListText, newGroupName, upsertGroup, t]);
 
@@ -218,6 +296,8 @@ export default function ProtectPdfPage() {
       );
       return;
     }
+
+    setHistoryEntries(appendCgBatchHistory(emails));
 
     setLoading(true);
     setProgress({ done: 0, total: tasks.length });
@@ -580,7 +660,28 @@ export default function ProtectPdfPage() {
               ) : null}
             </div>
 
-            <div className="flex flex-col gap-2">
+            <div className="relative flex flex-col gap-2">
+              {recentThree.length > 0 ? (
+                <div className="mb-1">
+                  <p className="mb-2 text-xs font-medium uppercase tracking-wider text-slate-500">
+                    {t.protectPdfRecentlyUsed}
+                  </p>
+                  <div className="flex flex-wrap gap-2">
+                    {recentThree.map((h, idx) => (
+                      <button
+                        key={`${h.at}-${idx}`}
+                        type="button"
+                        disabled={loading}
+                        onClick={() => applyHistoryEntry(h)}
+                        className="rounded-full border border-violet-500/35 bg-violet-500/10 px-3 py-1.5 text-xs font-medium text-violet-100 transition hover:bg-violet-500/20 disabled:opacity-45"
+                        title={h.emails.join(", ")}
+                      >
+                        {h.emails.length} · {formatHistoryAt(h.at)}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
               <label
                 htmlFor="email-list"
                 className="text-sm font-medium text-slate-300"
@@ -596,8 +697,23 @@ export default function ProtectPdfPage() {
                 placeholder={t.protectPdfEmailsPlaceholder}
                 className="min-h-[10rem] w-full resize-y rounded-xl border border-slate-700 bg-slate-900 px-4 py-3 text-sm text-slate-100 placeholder:text-slate-600 focus:border-sky-500 focus:outline-none focus:ring-1 focus:ring-sky-500 disabled:opacity-60"
               />
+              {suggestedLabel && !newGroupName.trim() ? (
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    disabled={loading}
+                    onClick={() => setNewGroupName(suggestedLabel)}
+                    className="rounded-lg border border-cyan-500/35 bg-cyan-950/50 px-3 py-1.5 text-xs font-medium text-cyan-100 transition hover:bg-cyan-900/55 disabled:opacity-45"
+                  >
+                    {tpl(t.protectPdfUseSuggestedName, {
+                      name: suggestedLabel,
+                    })}
+                  </button>
+                </div>
+              ) : null}
               <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-3">
                 <input
+                  id="protect-new-group-name"
                   type="text"
                   value={newGroupName}
                   onChange={(e) => setNewGroupName(e.target.value)}
@@ -684,6 +800,38 @@ export default function ProtectPdfPage() {
                 max: String(PDF_BATCH_MAX_COMBOS),
               })}
             </p>
+
+            {showSaveNewListTip ? (
+              <div
+                className="pointer-events-none fixed inset-x-0 bottom-4 z-[70] flex justify-center px-4 sm:inset-x-auto sm:bottom-6 sm:right-5 sm:justify-end"
+                role="status"
+              >
+                <div className="pointer-events-auto flex max-w-md items-center gap-3 rounded-2xl border border-amber-500/35 bg-slate-950/95 px-4 py-3 text-sm text-amber-50 shadow-2xl shadow-black/50 backdrop-blur-md ring-1 ring-amber-500/20">
+                  <p className="min-w-0 flex-1 leading-snug text-amber-100/95">
+                    {t.protectPdfSaveNewListTip}
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      document.getElementById("protect-new-group-name")?.focus();
+                    }}
+                    className="shrink-0 rounded-lg bg-amber-500/90 px-3 py-2 text-xs font-semibold text-slate-950 transition hover:bg-amber-400"
+                  >
+                    {t.protectPdfSaveNewListCta}
+                  </button>
+                  <button
+                    type="button"
+                    aria-label={t.protectPdfSaveNewListDismissAria}
+                    onClick={() =>
+                      setDismissedSaveTipKey(emailsIdentityKey)
+                    }
+                    className="shrink-0 rounded-lg p-1.5 text-amber-200/80 transition hover:bg-amber-950/50 hover:text-amber-50"
+                  >
+                    ×
+                  </button>
+                </div>
+              </div>
+            ) : null}
           </section>
         </div>
       </div>

@@ -187,4 +187,10 @@ export type Messages = {
   protectPdfFileRemove: string;
   protectPdfProgressFilesLabel: string;
   protectPdfProgressSteps: string;
+  /** Smart group / history (V2.3) */
+  protectPdfRecentlyUsed: string;
+  protectPdfSaveNewListTip: string;
+  protectPdfSaveNewListCta: string;
+  protectPdfSaveNewListDismissAria: string;
+  protectPdfUseSuggestedName: string;
 };
