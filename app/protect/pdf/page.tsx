@@ -2,7 +2,9 @@
 
 import { BatchProgress } from "@/components/pdf-protect/BatchProgress";
 import { FileCard } from "@/components/pdf-protect/FileCard";
+import { LanguageSelector } from "@/components/LanguageSelector";
 import { useCgEmailGroups } from "@/hooks/useCgEmailGroups";
+import { useLanguage } from "@/lib/i18n/language-context";
 import {
   PDF_BATCH_MAX_COMBOS,
   PDF_CLIENT_MAX_COMBOS,
@@ -15,6 +17,14 @@ import JSZip from "jszip";
 import Link from "next/link";
 import { useCallback, useMemo, useState } from "react";
 import { useDropzone } from "react-dropzone";
+
+function tpl(s: string, vars: Record<string, string>): string {
+  let out = s;
+  for (const [k, v] of Object.entries(vars)) {
+    out = out.split(`{${k}}`).join(v);
+  }
+  return out;
+}
 
 type Progress = { done: number; total: number };
 
@@ -45,27 +55,32 @@ function MailLetterIcon({ className }: { className?: string }) {
   );
 }
 
-async function sendProtectedPdfEmail(
-  blob: Blob,
-  to: string,
-  attachmentFileName: string
-): Promise<void> {
-  const fd = new FormData();
-  fd.set("to", to);
-  fd.set(
-    "file",
-    new File([blob], attachmentFileName, { type: "application/pdf" })
-  );
-  const res = await fetch("/api/send/pdf", { method: "POST", body: fd });
-  const j = (await res.json().catch(() => ({}))) as { message?: string };
-  if (!res.ok) {
-    throw new Error(j.message ?? `Email send failed (${res.status})`);
-  }
-}
-
 export default function ProtectPdfPage() {
+  const { t } = useLanguage();
   const { groups, hydrated, upsertGroup, removeGroup, sortedNames } =
     useCgEmailGroups();
+
+  const sendProtectedPdfEmail = useCallback(
+    async (blob: Blob, to: string, attachmentFileName: string) => {
+      const fd = new FormData();
+      fd.set("to", to);
+      fd.set(
+        "file",
+        new File([blob], attachmentFileName, { type: "application/pdf" })
+      );
+      const res = await fetch("/api/send/pdf", { method: "POST", body: fd });
+      const j = (await res.json().catch(() => ({}))) as { message?: string };
+      if (!res.ok) {
+        throw new Error(
+          j.message ??
+            tpl(t.protectPdfErrEmailSendFailed, {
+              status: String(res.status),
+            })
+        );
+      }
+    },
+    [t]
+  );
   const [pdfFiles, setPdfFiles] = useState<File[]>([]);
   const [emailListText, setEmailListText] = useState("");
   const [selectedGroupName, setSelectedGroupName] = useState<string | null>(
@@ -80,17 +95,20 @@ export default function ProtectPdfPage() {
   const [batchSendLog, setBatchSendLog] = useState<BatchLogRow[]>([]);
   const [error, setError] = useState<string | null>(null);
 
-  const onDrop = useCallback((acceptedFiles: File[]) => {
-    const next = acceptedFiles.filter(isPdfFileLike);
-    if (acceptedFiles.length > 0 && next.length === 0) {
-      setError("No valid PDFs (PDF only, max 25 MB each).");
-    } else if (next.length < acceptedFiles.length) {
-      setError("Some files were skipped (PDF only, max 25 MB each).");
-    } else if (next.length > 0) {
-      setError(null);
-    }
-    setPdfFiles((prev) => [...prev, ...next]);
-  }, []);
+  const onDrop = useCallback(
+    (acceptedFiles: File[]) => {
+      const next = acceptedFiles.filter(isPdfFileLike);
+      if (acceptedFiles.length > 0 && next.length === 0) {
+        setError(t.protectPdfErrNoValidPdfsDropped);
+      } else if (next.length < acceptedFiles.length) {
+        setError(t.protectPdfErrSomeSkipped);
+      } else if (next.length > 0) {
+        setError(null);
+      }
+      setPdfFiles((prev) => [...prev, ...next]);
+    },
+    [t]
+  );
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     onDrop,
@@ -139,11 +157,11 @@ export default function ProtectPdfPage() {
     const name = newGroupName.trim();
     const emails = parseEmailListFromRaw(emailListText);
     if (!name) {
-      setError("Enter a name for the group (e.g. 狗狗沃克班).");
+      setError(t.protectPdfErrGroupName);
       return;
     }
     if (emails.length === 0) {
-      setError("Paste at least one valid email before saving the group.");
+      setError(t.protectPdfErrPasteEmails);
       return;
     }
     upsertGroup(name, emails);
@@ -151,7 +169,7 @@ export default function ProtectPdfPage() {
     setSelectValue(name);
     setNewGroupName("");
     setError(null);
-  }, [emailListText, newGroupName, upsertGroup]);
+  }, [emailListText, newGroupName, upsertGroup, t]);
 
   const onEmailTextChange = useCallback((value: string) => {
     setEmailListText(value);
@@ -166,18 +184,20 @@ export default function ProtectPdfPage() {
 
     const emails = parseEmailListFromRaw(emailListText);
     if (pdfFiles.length === 0) {
-      setError("Add at least one PDF (drop files or use the zone below).");
+      setError(t.protectPdfErrNeedPdf);
       return;
     }
     if (emails.length === 0) {
-      setError("Select a contact group or enter at least one valid email.");
+      setError(t.protectPdfErrNeedEmail);
       return;
     }
 
     const invalid = pdfFiles.filter((f) => !isPdfFileLike(f));
     if (invalid.length > 0) {
       setError(
-        `Each PDF must be ≤ 25 MB and named .pdf. Check: ${invalid.map((f) => f.name).join(", ")}`
+        tpl(t.protectPdfErrPdfInvalid, {
+          names: invalid.map((f) => f.name).join(", "),
+        })
       );
       return;
     }
@@ -191,7 +211,10 @@ export default function ProtectPdfPage() {
 
     if (tasks.length > PDF_CLIENT_MAX_COMBOS) {
       setError(
-        `Too many combinations (${tasks.length}). Maximum ${PDF_CLIENT_MAX_COMBOS} (files × emails). Split into smaller batches.`
+        tpl(t.protectPdfErrTooManyCombos, {
+          total: String(tasks.length),
+          max: String(PDF_CLIENT_MAX_COMBOS),
+        })
       );
       return;
     }
@@ -215,7 +238,10 @@ export default function ProtectPdfPage() {
           const j = (await res.json().catch(() => null)) as {
             message?: string;
           } | null;
-          throw new Error(j?.message ?? `Request failed (${res.status})`);
+          throw new Error(
+            j?.message ??
+              tpl(t.protectPdfErrRequestFailed, { status: String(res.status) })
+          );
         }
 
         const blob = await res.blob();
@@ -268,7 +294,11 @@ export default function ProtectPdfPage() {
           } | null;
           throw new Error(
             j?.message ??
-              `Failed on ${file.name} × ${email} (${res.status})`
+              tpl(t.protectPdfErrFailedOn, {
+                file: file.name,
+                email,
+                status: String(res.status),
+              })
           );
         }
 
@@ -307,37 +337,48 @@ export default function ProtectPdfPage() {
       a.click();
       URL.revokeObjectURL(url);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Something went wrong.");
+      setError(
+        err instanceof Error ? err.message : t.protectPdfErrGeneric
+      );
     } finally {
       setLoading(false);
     }
-  }, [emailListText, pdfFiles, sendEmailAfterProtection]);
+  }, [
+    emailListText,
+    pdfFiles,
+    sendEmailAfterProtection,
+    sendProtectedPdfEmail,
+    t,
+  ]);
 
   return (
     <main className="min-h-screen px-4 py-10 sm:py-12">
       <div className="mx-auto max-w-6xl">
-        <div className="mb-10">
-          <Link
-            href="/"
-            className="text-sm text-slate-400 underline-offset-4 hover:text-slate-200 hover:underline"
-          >
-            ← Creator Guard home
-          </Link>
-          <h1 className="mt-4 text-2xl font-semibold tracking-tight text-white sm:text-3xl">
-            PDF Guard · Batch
-          </h1>
-          <p className="mt-2 max-w-2xl text-sm leading-relaxed text-slate-400">
-            Drop PDFs on the left, load a saved contact group or paste emails on
-            the right, then start batch protection. Multiple outputs are zipped
-            with <span className="text-slate-300">JSZip</span>.
-          </p>
+        <div className="mb-10 flex flex-col gap-6 sm:flex-row sm:items-start sm:justify-between">
+          <div className="min-w-0 flex-1">
+            <Link
+              href="/"
+              className="text-sm text-slate-400 underline-offset-4 hover:text-slate-200 hover:underline"
+            >
+              {t.protectPdfBackHome}
+            </Link>
+            <h1 className="mt-4 text-2xl font-semibold tracking-tight text-white sm:text-3xl">
+              {t.protectPdfTitle}
+            </h1>
+            <p className="mt-2 max-w-2xl text-sm leading-relaxed text-slate-400">
+              {t.protectPdfIntro}
+            </p>
+          </div>
+          <div className="shrink-0 sm:pt-1">
+            <LanguageSelector />
+          </div>
         </div>
 
         <div className="grid grid-cols-1 gap-8 lg:grid-cols-5 lg:gap-10">
           {/* Left ~40% */}
           <section className="flex flex-col gap-4 lg:col-span-2">
             <h2 className="text-xs font-semibold uppercase tracking-wider text-slate-500">
-              Files
+              {t.protectPdfSectionFiles}
             </h2>
             <div
               {...getRootProps()}
@@ -350,18 +391,18 @@ export default function ProtectPdfPage() {
               <input {...getInputProps()} />
               <p className="text-center text-sm font-medium text-slate-200">
                 {isDragActive
-                  ? "Drop PDFs here…"
-                  : "Drag & drop PDFs, or click to browse"}
+                  ? t.protectPdfDropActive
+                  : t.protectPdfDropIdle}
               </p>
               <p className="mt-2 text-center text-xs text-slate-500">
-                Multiple files · max 25 MB each
+                {t.protectPdfDropHint}
               </p>
             </div>
 
             <div className="space-y-2">
               {pdfFiles.length === 0 ? (
                 <p className="rounded-xl border border-slate-800/80 bg-slate-950/30 px-4 py-6 text-center text-sm text-slate-500">
-                  No files yet
+                  {t.protectPdfNoFilesYet}
                 </p>
               ) : (
                 pdfFiles.map((f, idx) => (
@@ -378,7 +419,7 @@ export default function ProtectPdfPage() {
           {/* Right ~60% */}
           <section className="flex flex-col gap-5 lg:col-span-3">
             <h2 className="text-xs font-semibold uppercase tracking-wider text-slate-500">
-              Contact book & batch
+              {t.protectPdfSectionContact}
             </h2>
 
             {(loading && progress) || batchSendLog.length > 0 ? (
@@ -386,7 +427,7 @@ export default function ProtectPdfPage() {
                 {loading && progress ? (
                   <>
                     <p className="mb-1 text-center text-xs font-medium text-slate-500">
-                      Batch running
+                      {t.protectPdfBatchRunning}
                     </p>
                     <BatchProgress
                       done={progress.done}
@@ -397,7 +438,7 @@ export default function ProtectPdfPage() {
                   </>
                 ) : (
                   <p className="mb-3 text-center text-xs font-medium text-slate-500">
-                    Last batch
+                    {t.protectPdfLastBatch}
                   </p>
                 )}
                 {batchSendLog.length > 0 ? (
@@ -422,7 +463,7 @@ export default function ProtectPdfPage() {
                         {row.emailSent ? (
                           <span
                             className="inline-flex shrink-0 items-center gap-0.5 text-emerald-400/90"
-                            title="Email sent"
+                            title={t.protectPdfEmailSentTitle}
                           >
                             <MailLetterIcon className="text-emerald-400/90" />
                           </span>
@@ -443,12 +484,12 @@ export default function ProtectPdfPage() {
                     htmlFor="select-email-group"
                     className="text-sm font-medium text-slate-300"
                   >
-                    Select group
+                    {t.protectPdfSelectGroup}
                   </label>
                   <p className="mt-0.5 text-xs text-slate-500">
-                    Saved in{" "}
+                    {t.protectPdfSavedInPrefix}{" "}
                     <code className="text-slate-600">cg_email_groups</code>
-                    {!hydrated ? " · loading…" : null}
+                    {!hydrated ? ` · ${t.protectPdfLoadingSuffix}` : null}
                   </p>
                   <select
                     id="select-email-group"
@@ -460,7 +501,7 @@ export default function ProtectPdfPage() {
                       backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke='%2367e8f9'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='M19 9l-7 7-7-7'%3E%3C/path%3E%3C/svg%3E")`,
                     }}
                   >
-                    <option value="">— Pick a contact group —</option>
+                    <option value="">{t.protectPdfPickGroupPlaceholder}</option>
                     {sortedNames.map((name) => (
                       <option key={name} value={name}>
                         {name} ({groups[name]?.length ?? 0})
@@ -473,7 +514,7 @@ export default function ProtectPdfPage() {
               {sortedNames.length > 0 ? (
                 <div>
                   <p className="mb-2 text-xs font-medium uppercase tracking-wider text-slate-500">
-                    Quick badges
+                    {t.protectPdfQuickBadges}
                   </p>
                   <div className="flex flex-wrap gap-2">
                     {sortedNames.map((name) => {
@@ -508,8 +549,10 @@ export default function ProtectPdfPage() {
                           <button
                             type="button"
                             disabled={loading}
-                            title="Remove group"
-                            aria-label={`Remove group ${name}`}
+                            title={t.protectPdfRemoveGroup}
+                            aria-label={tpl(t.protectPdfRemoveGroupAria, {
+                              name,
+                            })}
                             onClick={() => {
                               removeGroup(name);
                               if (selectedGroupName === name) {
@@ -528,8 +571,11 @@ export default function ProtectPdfPage() {
                 </div>
               ) : hydrated ? (
                 <p className="rounded-xl border border-dashed border-slate-700/80 bg-slate-950/20 px-4 py-4 text-sm text-slate-500">
-                  No groups yet. Paste emails in the box below, name the group,
-                  and click <strong className="text-slate-400">Save as Group</strong>.
+                  {t.protectPdfNoGroupsHint}{" "}
+                  <strong className="text-slate-400">
+                    {t.protectPdfNoGroupsBold}
+                  </strong>
+                  .
                 </p>
               ) : null}
             </div>
@@ -539,7 +585,7 @@ export default function ProtectPdfPage() {
                 htmlFor="email-list"
                 className="text-sm font-medium text-slate-300"
               >
-                Emails for this batch
+                {t.protectPdfEmailsLabel}
               </label>
               <textarea
                 id="email-list"
@@ -547,9 +593,7 @@ export default function ProtectPdfPage() {
                 onChange={(e) => onEmailTextChange(e.target.value)}
                 rows={7}
                 disabled={loading}
-                placeholder={
-                  "buyer1@example.com\nbuyer2@example.com\nor comma / semicolon separated"
-                }
+                placeholder={t.protectPdfEmailsPlaceholder}
                 className="min-h-[10rem] w-full resize-y rounded-xl border border-slate-700 bg-slate-900 px-4 py-3 text-sm text-slate-100 placeholder:text-slate-600 focus:border-sky-500 focus:outline-none focus:ring-1 focus:ring-sky-500 disabled:opacity-60"
               />
               <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-3">
@@ -558,9 +602,9 @@ export default function ProtectPdfPage() {
                   value={newGroupName}
                   onChange={(e) => setNewGroupName(e.target.value)}
                   disabled={loading}
-                  placeholder="Group name (e.g. 狗狗沃克班)"
+                  placeholder={t.protectPdfNewGroupPlaceholder}
                   className="min-w-0 flex-1 rounded-xl border border-slate-700 bg-slate-900 px-3 py-2.5 text-sm text-slate-100 placeholder:text-slate-600 focus:border-sky-500 focus:outline-none focus:ring-1 focus:ring-sky-500 disabled:opacity-60"
-                  aria-label="New contact group name"
+                  aria-label={t.protectPdfNewGroupAria}
                 />
                 <button
                   type="button"
@@ -568,14 +612,27 @@ export default function ProtectPdfPage() {
                   disabled={loading}
                   className="shrink-0 rounded-xl border border-emerald-600/50 bg-emerald-950/40 px-4 py-2.5 text-sm font-semibold text-emerald-100 transition hover:bg-emerald-900/50 disabled:opacity-50"
                 >
-                  Save as Group
+                  {t.protectPdfSaveAsGroup}
                 </button>
               </div>
               <p className="text-xs text-slate-500">
-                {parsedEmails.length} valid email
-                {parsedEmails.length === 1 ? "" : "s"}
+                {parsedEmails.length === 0
+                  ? tpl(t.protectPdfManyValidEmails, {
+                      count: "0",
+                    })
+                  : parsedEmails.length === 1
+                    ? t.protectPdfOneValidEmail
+                    : tpl(t.protectPdfManyValidEmails, {
+                        count: String(parsedEmails.length),
+                      })}
                 {comboCount > 0
-                  ? ` · ${comboCount} output${comboCount === 1 ? "" : "s"}`
+                  ? ` · ${
+                      comboCount === 1
+                        ? t.protectPdfOneOutput
+                        : tpl(t.protectPdfManyOutputs, {
+                            count: String(comboCount),
+                          })
+                    }`
                   : ""}
               </p>
             </div>
@@ -592,18 +649,10 @@ export default function ProtectPdfPage() {
               />
               <span className="text-sm leading-snug text-slate-300">
                 <span className="font-medium text-slate-200">
-                  Send to recipients via Email after protection
+                  {t.protectPdfSendEmailCheckbox}
                 </span>
                 <span className="mt-1 block text-xs text-slate-500">
-                  Uses Resend. Set{" "}
-                  <code className="rounded bg-slate-800 px-1 text-slate-400">
-                    RESEND_API_KEY
-                  </code>{" "}
-                  in{" "}
-                  <code className="rounded bg-slate-800 px-1 text-slate-400">
-                    .env.local
-                  </code>
-                  . Each protected PDF is emailed to its buyer address.
+                  {t.protectPdfSendEmailHint}
                 </span>
               </span>
             </label>
@@ -622,15 +671,18 @@ export default function ProtectPdfPage() {
             >
               {loading
                 ? progress && progress.total > 1
-                  ? `Protecting… ${progress.done}/${progress.total}`
-                  : "Protecting…"
-                : "Start batch protection"}
+                  ? tpl(t.protectPdfProtectingWithCount, {
+                      done: String(progress.done),
+                      total: String(progress.total),
+                    })
+                  : t.protectPdfProtecting
+                : t.protectPdfStartBatch}
             </button>
 
             <p className="text-[11px] leading-relaxed text-slate-600">
-              One output = direct PDF download. Multiple = sequential API calls
-              then one ZIP. Server batch (max {PDF_BATCH_MAX_COMBOS} combos):{" "}
-              <code className="rounded bg-slate-800 px-1">POST /api/protect/pdf/batch</code>
+              {tpl(t.protectPdfFooterBatch, {
+                max: String(PDF_BATCH_MAX_COMBOS),
+              })}
             </p>
           </section>
         </div>

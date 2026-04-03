@@ -13,7 +13,10 @@ import {
 import { dictionary, isLocale } from "./dictionary";
 import type { Locale, Messages } from "./types";
 
-const STORAGE_KEY = "creatorGuardLocale";
+/** Primary key for locale persistence (cross-page). */
+const CG_LOCALE_KEY = "cg_locale";
+/** Legacy key — read once and migrated into `cg_locale`. */
+const LEGACY_LOCALE_KEY = "creatorGuardLocale";
 
 const htmlLangMap: Record<Locale, string> = {
   en: "en",
@@ -37,7 +40,14 @@ export function LanguageProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     startTransition(() => {
       try {
-        const saved = localStorage.getItem(STORAGE_KEY);
+        let saved = localStorage.getItem(CG_LOCALE_KEY);
+        if (!saved || !isLocale(saved)) {
+          const legacy = localStorage.getItem(LEGACY_LOCALE_KEY);
+          if (legacy && isLocale(legacy)) {
+            saved = legacy;
+            localStorage.setItem(CG_LOCALE_KEY, legacy);
+          }
+        }
         if (saved && isLocale(saved)) setLocaleState(saved);
       } catch {
         /* ignore */
@@ -48,7 +58,7 @@ export function LanguageProvider({ children }: { children: ReactNode }) {
   const setLocale = useCallback((next: Locale) => {
     setLocaleState(next);
     try {
-      localStorage.setItem(STORAGE_KEY, next);
+      localStorage.setItem(CG_LOCALE_KEY, next);
     } catch {
       /* ignore */
     }

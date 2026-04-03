@@ -1,5 +1,7 @@
 "use client";
 
+import { useLanguage } from "@/lib/i18n/language-context";
+
 type FileCardProps = {
   file: File;
   onRemove: () => void;
@@ -12,11 +14,12 @@ function formatSize(bytes: number): string {
 }
 
 export function FileCard({ file, onRemove }: FileCardProps) {
+  const { t } = useLanguage();
   return (
     <div className="flex items-center gap-3 rounded-xl border border-slate-700/80 bg-slate-900/60 px-3 py-2.5">
       <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-red-500/15 text-red-400/90">
         <span className="text-[10px] font-bold uppercase tracking-tighter">
-          PDF
+          {t.protectPdfBadgePdf}
         </span>
       </div>
       <div className="min-w-0 flex-1">
@@ -30,7 +33,7 @@ export function FileCard({ file, onRemove }: FileCardProps) {
         onClick={onRemove}
         className="shrink-0 rounded-lg border border-slate-600/80 bg-slate-800/80 px-2.5 py-1 text-xs font-medium text-slate-400 transition hover:border-red-500/40 hover:bg-red-950/40 hover:text-red-200"
       >
-        Remove
+        {t.protectPdfFileRemove}
       </button>
     </div>
   );

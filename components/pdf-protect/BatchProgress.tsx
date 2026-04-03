@@ -1,5 +1,7 @@
 "use client";
 
+import { useLanguage } from "@/lib/i18n/language-context";
+
 type BatchProgressProps = {
   done: number;
   total: number;
@@ -19,6 +21,7 @@ export function BatchProgress({
   fileCount,
   emailsPerFile,
 }: BatchProgressProps) {
+  const { t } = useLanguage();
   const ringRatio = total > 0 ? Math.min(1, done / total) : 0;
   const dashOffset = CIRC * (1 - ringRatio);
 
@@ -66,11 +69,11 @@ export function BatchProgress({
             {fileCount}
           </p>
           <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">
-            files
+            {t.protectPdfProgressFilesLabel}
           </p>
           {total > 1 ? (
             <p className="mt-1 text-[11px] tabular-nums text-slate-600">
-              {done}/{total} steps
+              {done}/{total} {t.protectPdfProgressSteps}
             </p>
           ) : null}
         </div>
