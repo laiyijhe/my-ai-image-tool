@@ -4,18 +4,11 @@ import {
   isLikelyPdfBuffer,
   protectPdfWithCreatorGuard,
 } from "@/lib/pdf-guard";
+import { PDF_PROTECT_MAX_BYTES, safePdfFileName } from "@/lib/pdf-protect-shared";
 import { type NextRequest, NextResponse } from "next/server";
 
 export const maxDuration = 60;
 export const runtime = "nodejs";
-
-const MAX_PDF_BYTES = 25 * 1024 * 1024;
-
-function safePdfFileName(name: string): string {
-  const base = name.replace(/[^a-zA-Z0-9._-]+/g, "_").replace(/^_+|_+$/g, "");
-  const stem = (base.length > 0 ? base : "document").replace(/\.pdf$/i, "");
-  return `creator-guard-${stem.slice(0, 80)}.pdf`;
-}
 
 export async function POST(request: NextRequest) {
   let formData: FormData;
@@ -46,7 +39,7 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  if (file.size > MAX_PDF_BYTES) {
+  if (file.size > PDF_PROTECT_MAX_BYTES) {
     return NextResponse.json({ error: "PDF too large" }, { status: 413 });
   }
 
