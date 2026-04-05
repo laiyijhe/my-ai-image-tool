@@ -2,7 +2,6 @@
 
 import { BatchProgress } from "@/components/pdf-protect/BatchProgress";
 import { FileCard } from "@/components/pdf-protect/FileCard";
-import { LanguageSelector } from "@/components/LanguageSelector";
 import { useCgEmailGroups } from "@/hooks/useCgEmailGroups";
 import {
   appendCgBatchHistory,
@@ -10,6 +9,8 @@ import {
   type CgBatchHistoryEntry,
 } from "@/lib/cg-batch-history";
 import { useLanguage } from "@/lib/i18n/language-context";
+import { useLiff } from "@/lib/line/liff-provider";
+import { buildPdfShareFlex } from "@/lib/line/pdf-share-flex";
 import {
   PDF_BATCH_MAX_COMBOS,
   PDF_CLIENT_MAX_COMBOS,
@@ -21,7 +22,6 @@ import {
   suggestGroupLabelFromRaw,
 } from "@/lib/pdf-protect-shared";
 import JSZip from "jszip";
-import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useDropzone } from "react-dropzone";
 
@@ -64,6 +64,11 @@ function MailLetterIcon({ className }: { className?: string }) {
 
 export default function ProtectPdfPage() {
   const { t, locale } = useLanguage();
+  const {
+    ready: liffReady,
+    canUseShareTargetPicker,
+    shareTargetPickerMessages,
+  } = useLiff();
   const { groups, hydrated, upsertGroup, removeGroup, sortedNames } =
     useCgEmailGroups();
 
@@ -107,6 +112,31 @@ export default function ProtectPdfPage() {
   const [dismissedSaveTipKey, setDismissedSaveTipKey] = useState<string | null>(
     null
   );
+  const [lastShareable, setLastShareable] = useState<{
+    blob: Blob;
+    fileName: string;
+  } | null>(null);
+  const [lineShareBusy, setLineShareBusy] = useState(false);
+  const [lineShareNotice, setLineShareNotice] = useState<string | null>(null);
+  const [fileQueueStatus, setFileQueueStatus] = useState<
+    ("pending" | "protecting" | "ready")[]
+  >([]);
+
+  const previewPdf = pdfFiles[0] ?? null;
+  const previewUrl = useMemo(() => {
+    if (!previewPdf || !isPdfFileLike(previewPdf)) return null;
+    return URL.createObjectURL(previewPdf);
+  }, [previewPdf]);
+
+  useEffect(() => {
+    return () => {
+      if (previewUrl) URL.revokeObjectURL(previewUrl);
+    };
+  }, [previewUrl]);
+
+  useEffect(() => {
+    setFileQueueStatus(pdfFiles.map(() => "pending"));
+  }, [pdfFiles]);
 
   useEffect(() => {
     setHistoryEntries(loadCgBatchHistory());
@@ -301,10 +331,12 @@ export default function ProtectPdfPage() {
 
     setLoading(true);
     setProgress({ done: 0, total: tasks.length });
+    setFileQueueStatus(pdfFiles.map(() => "pending"));
 
     try {
       if (tasks.length === 1) {
         const { file, email } = tasks[0]!;
+        setFileQueueStatus(["protecting"]);
         const postFd = new FormData();
         postFd.set("file", file);
         postFd.set("buyerEmail", email);
@@ -345,6 +377,8 @@ export default function ProtectPdfPage() {
           },
         ]);
 
+        setLastShareable({ blob, fileName: downloadName });
+
         const url = URL.createObjectURL(blob);
         const a = document.createElement("a");
         a.href = url;
@@ -352,12 +386,20 @@ export default function ProtectPdfPage() {
         a.click();
         URL.revokeObjectURL(url);
         setProgress({ done: 1, total: 1 });
+        setFileQueueStatus(["ready"]);
         return;
       }
 
       const zip = new JSZip();
+      const nEmails = emails.length;
 
       for (let i = 0; i < tasks.length; i++) {
+        const fIdx = Math.floor(i / nEmails);
+        setFileQueueStatus(
+          pdfFiles.map((_, fi) =>
+            fi < fIdx ? "ready" : fi === fIdx ? "protecting" : "pending"
+          )
+        );
         const { file, email } = tasks[i]!;
         const postFd = new FormData();
         postFd.set("file", file);
@@ -410,12 +452,19 @@ export default function ProtectPdfPage() {
         compressionOptions: { level: 6 },
       });
 
+      const zipDownloadName = `creator-guard-batch-${new Date().toISOString().slice(0, 10)}.zip`;
+      setLastShareable({
+        blob: zipBlob,
+        fileName: zipDownloadName,
+      });
+
       const url = URL.createObjectURL(zipBlob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `creator-guard-batch-${new Date().toISOString().slice(0, 10)}.zip`;
+      a.download = zipDownloadName;
       a.click();
       URL.revokeObjectURL(url);
+      setFileQueueStatus(pdfFiles.map(() => "ready"));
     } catch (err) {
       setError(
         err instanceof Error ? err.message : t.protectPdfErrGeneric
@@ -431,27 +480,94 @@ export default function ProtectPdfPage() {
     t,
   ]);
 
+  const onShareViaLine = useCallback(async () => {
+    if (!lastShareable) return;
+    setLineShareNotice(null);
+    setError(null);
+    setLineShareBusy(true);
+    try {
+      const lower = lastShareable.fileName.toLowerCase();
+      if (!lower.endsWith(".pdf") && !lower.endsWith(".zip")) {
+        setError(t.protectPdfShareLineInvalidType);
+        return;
+      }
+      const mime = lower.endsWith(".zip")
+        ? "application/zip"
+        : "application/pdf";
+      const fd = new FormData();
+      fd.set(
+        "file",
+        new File([lastShareable.blob], lastShareable.fileName, { type: mime })
+      );
+      const res = await fetch("/api/share/pdf-upload", {
+        method: "POST",
+        body: fd,
+      });
+      const j = (await res.json().catch(() => ({}))) as {
+        error?: string;
+        url?: string;
+      };
+      if (!res.ok) {
+        const err = j.error;
+        if (err === "blob_not_configured") {
+          setError(t.protectPdfShareLineBlobMissing);
+        } else if (err === "file_too_large") {
+          setError(t.protectPdfShareLineFileTooLarge);
+        } else if (err === "invalid_type") {
+          setError(t.protectPdfShareLineInvalidType);
+        } else {
+          setError(t.protectPdfShareLineUploadFailed);
+        }
+        return;
+      }
+      const publicUrl = j.url;
+      if (!publicUrl) {
+        setError(t.protectPdfShareLineUploadFailed);
+        return;
+      }
+      const messages = buildPdfShareFlex(
+        publicUrl,
+        lastShareable.fileName,
+        {
+          altText: t.protectPdfShareLineFlexAlt,
+          title: t.protectPdfShareLineFlexTitle,
+          subtitle: t.protectPdfShareLineFlexSubtitle,
+          download: t.protectPdfShareLineFlexDownload,
+        }
+      );
+      if (liffReady && canUseShareTargetPicker) {
+        try {
+          await shareTargetPickerMessages(messages);
+        } catch {
+          setError(t.protectPdfShareLineShareFailed);
+        }
+      } else {
+        await navigator.clipboard.writeText(publicUrl);
+        setLineShareNotice(t.copied);
+      }
+    } catch {
+      setError(t.protectPdfShareLineUploadFailed);
+    } finally {
+      setLineShareBusy(false);
+    }
+  }, [
+    lastShareable,
+    t,
+    liffReady,
+    canUseShareTargetPicker,
+    shareTargetPickerMessages,
+  ]);
+
   return (
     <main className="min-h-screen px-4 py-10 sm:py-12">
       <div className="mx-auto max-w-6xl">
-        <div className="mb-10 flex flex-col gap-6 sm:flex-row sm:items-start sm:justify-between">
-          <div className="min-w-0 flex-1">
-            <Link
-              href="/"
-              className="text-sm text-slate-400 underline-offset-4 hover:text-slate-200 hover:underline"
-            >
-              {t.protectPdfBackHome}
-            </Link>
-            <h1 className="mt-4 text-2xl font-semibold tracking-tight text-white sm:text-3xl">
-              {t.protectPdfTitle}
-            </h1>
-            <p className="mt-2 max-w-2xl text-sm leading-relaxed text-slate-400">
-              {t.protectPdfIntro}
-            </p>
-          </div>
-          <div className="shrink-0 sm:pt-1">
-            <LanguageSelector />
-          </div>
+        <div className="mb-10">
+          <h1 className="text-2xl font-semibold tracking-tight text-white sm:text-3xl">
+            {t.protectPdfTitle}
+          </h1>
+          <p className="mt-2 max-w-2xl text-sm leading-relaxed text-slate-400">
+            {t.protectPdfIntro}
+          </p>
         </div>
 
         <div className="grid grid-cols-1 gap-8 lg:grid-cols-5 lg:gap-10">
@@ -460,39 +576,65 @@ export default function ProtectPdfPage() {
             <h2 className="text-xs font-semibold uppercase tracking-wider text-slate-500">
               {t.protectPdfSectionFiles}
             </h2>
-            <div
-              {...getRootProps()}
-              className={`flex min-h-[11rem] cursor-pointer flex-col items-center justify-center rounded-2xl border-2 border-dashed px-4 py-8 transition ${
-                isDragActive
-                  ? "border-sky-400/70 bg-sky-500/10"
-                  : "border-slate-600/70 bg-slate-900/40 hover:border-slate-500"
-              } ${loading ? "pointer-events-none opacity-50" : ""}`}
-            >
-              <input {...getInputProps()} />
-              <p className="text-center text-sm font-medium text-slate-200">
-                {isDragActive
-                  ? t.protectPdfDropActive
-                  : t.protectPdfDropIdle}
-              </p>
-              <p className="mt-2 text-center text-xs text-slate-500">
-                {t.protectPdfDropHint}
-              </p>
+            <div className="flex flex-col gap-4 lg:flex-row lg:items-stretch">
+              <div
+                {...getRootProps()}
+                className={`flex min-h-[11rem] min-w-0 flex-1 cursor-pointer flex-col items-center justify-center rounded-2xl border-2 border-dashed px-4 py-8 transition ${
+                  isDragActive
+                    ? "border-sky-400/70 bg-sky-500/10"
+                    : "border-slate-600/70 bg-slate-900/40 hover:border-slate-500"
+                } ${loading ? "pointer-events-none opacity-50" : ""}`}
+              >
+                <input {...getInputProps()} />
+                <p className="text-center text-sm font-medium text-slate-200">
+                  {isDragActive
+                    ? t.protectPdfDropActive
+                    : t.protectPdfDropIdle}
+                </p>
+                <p className="mt-2 text-center text-xs text-slate-500">
+                  {t.protectPdfDropHint}
+                </p>
+              </div>
+              <div className="flex w-full shrink-0 flex-col lg:w-52">
+                <p className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+                  {t.protectPdfLivePreview}
+                </p>
+                <div className="flex min-h-[11rem] flex-1 overflow-hidden rounded-2xl border border-slate-700/80 bg-slate-950/60">
+                  {previewUrl ? (
+                    <iframe
+                      title={t.protectPdfLivePreview}
+                      src={previewUrl}
+                      className="h-full min-h-[11rem] w-full bg-slate-900"
+                    />
+                  ) : (
+                    <div className="flex flex-1 items-center justify-center px-3 text-center text-xs text-slate-600">
+                      {t.protectPdfLivePreviewEmpty}
+                    </div>
+                  )}
+                </div>
+              </div>
             </div>
 
-            <div className="space-y-2">
-              {pdfFiles.length === 0 ? (
-                <p className="rounded-xl border border-slate-800/80 bg-slate-950/30 px-4 py-6 text-center text-sm text-slate-500">
-                  {t.protectPdfNoFilesYet}
-                </p>
-              ) : (
-                pdfFiles.map((f, idx) => (
-                  <FileCard
-                    key={`${idx}-${f.name}-${f.size}`}
-                    file={f}
-                    onRemove={() => removeFile(idx)}
-                  />
-                ))
-              )}
+            <div>
+              <h3 className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+                {t.protectPdfQueueTitle}
+              </h3>
+              <div className="space-y-2">
+                {pdfFiles.length === 0 ? (
+                  <p className="rounded-xl border border-slate-800/80 bg-slate-950/30 px-4 py-6 text-center text-sm text-slate-500">
+                    {t.protectPdfNoFilesYet}
+                  </p>
+                ) : (
+                  pdfFiles.map((f, idx) => (
+                    <FileCard
+                      key={`${idx}-${f.name}-${f.size}`}
+                      file={f}
+                      queueStatus={fileQueueStatus[idx] ?? "pending"}
+                      onRemove={() => removeFile(idx)}
+                    />
+                  ))
+                )}
+              </div>
             </div>
           </section>
 
@@ -553,6 +695,35 @@ export default function ProtectPdfPage() {
                       </li>
                     ))}
                   </ul>
+                ) : null}
+                {!loading && lastShareable ? (
+                  <div className="mt-4 border-t border-slate-800/80 pt-4">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <button
+                        type="button"
+                        disabled={lineShareBusy || !liffReady}
+                        onClick={() => void onShareViaLine()}
+                        className="inline-flex items-center justify-center gap-2 rounded-xl border border-[#06C755]/50 bg-[#06C755]/15 px-4 py-2.5 text-sm font-semibold text-[#89f0a8] transition hover:bg-[#06C755]/25 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        {lineShareBusy ? (
+                          <>
+                            <span
+                              className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-[#89f0a8]/30 border-t-[#89f0a8]"
+                              aria-hidden
+                            />
+                            {t.protectPdfShareLineUploading}
+                          </>
+                        ) : (
+                          t.protectPdfShareLine
+                        )}
+                      </button>
+                    </div>
+                    {lineShareNotice ? (
+                      <p className="mt-2 text-xs text-emerald-400/90">
+                        {lineShareNotice}
+                      </p>
+                    ) : null}
+                  </div>
                 ) : null}
               </div>
             ) : null}

@@ -1,11 +1,10 @@
 import { Buffer } from "node:buffer";
 import { extractPdfFingerprint } from "@/lib/pdf-fingerprint";
+import { PDF_PROTECT_MAX_BYTES } from "@/lib/pdf-protect-shared";
 import { type NextRequest, NextResponse } from "next/server";
 
-export const maxDuration = 60;
+export const maxDuration = 180;
 export const runtime = "nodejs";
-
-const MAX_PDF_BYTES = 25 * 1024 * 1024;
 
 function isPdfMagic(buf: Buffer): boolean {
   return buf.length >= 4 && buf.subarray(0, 4).toString("latin1") === "%PDF";
@@ -30,10 +29,15 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  if (file.size > MAX_PDF_BYTES) {
-    return NextResponse.json({ error: "too_large", message: "PDF too large." }, {
-      status: 413,
-    });
+  if (file.size > PDF_PROTECT_MAX_BYTES) {
+    const mb = PDF_PROTECT_MAX_BYTES / (1024 * 1024);
+    return NextResponse.json(
+      {
+        error: "too_large",
+        message: `PDF exceeds maximum size (${mb} MB).`,
+      },
+      { status: 413 }
+    );
   }
 
   let buf: Buffer;

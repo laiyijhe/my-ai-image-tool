@@ -1,0 +1,319 @@
+"use client";
+
+import { LanguageSelector } from "@/components/LanguageSelector";
+import { isLocale } from "@/lib/i18n/dictionary";
+import { useLanguage } from "@/lib/i18n/language-context";
+import type { Locale } from "@/lib/i18n/types";
+import { AnimatePresence, motion } from "framer-motion";
+import Link from "next/link";
+import { useParams, usePathname } from "next/navigation";
+import type { ReactNode } from "react";
+import { useRef, useState } from "react";
+
+function IconPdf({ className }: { className?: string }) {
+  return (
+    <svg
+      className={className}
+      width="20"
+      height="20"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.75"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+    >
+      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+      <path d="M14 2v6h6" />
+      <path d="M9 13h6M9 17h4" />
+    </svg>
+  );
+}
+
+function IconImage({ className }: { className?: string }) {
+  return (
+    <svg
+      className={className}
+      width="20"
+      height="20"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.75"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+    >
+      <rect x="3" y="3" width="18" height="18" rx="2" />
+      <circle cx="8.5" cy="8.5" r="1.5" />
+      <path d="m21 15-5-5L5 21" />
+    </svg>
+  );
+}
+
+function IconVideo({ className }: { className?: string }) {
+  return (
+    <svg
+      className={className}
+      width="20"
+      height="20"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.75"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+    >
+      <rect x="2" y="5" width="14" height="14" rx="2" />
+      <path d="m22 9-4 3 4 3V9Z" />
+    </svg>
+  );
+}
+
+function IconVerify({ className }: { className?: string }) {
+  return (
+    <svg
+      className={className}
+      width="20"
+      height="20"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.75"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+    >
+      <circle cx="12" cy="12" r="9" />
+      <path d="M8 12.5 11 16 17 9" />
+    </svg>
+  );
+}
+
+const LOCALE_RE = /^\/(en|zh-TW|zh-CN|ja|ko)(\/|$)/;
+
+function isVerifyPath(p: string) {
+  if (p === "/verify" || p.startsWith("/verify/")) return true;
+  return /^\/(en|zh-TW|zh-CN|ja|ko)\/verify(\/|$)/.test(p);
+}
+
+function matchProtectPdf(p: string) {
+  if (p.startsWith("/protect/pdf")) return true;
+  return /^\/(en|zh-TW|zh-CN|ja|ko)\/protect\/pdf(\/|$)/.test(p);
+}
+
+function matchProtectImage(p: string) {
+  if (p.startsWith("/protect/image")) return true;
+  return /^\/(en|zh-TW|zh-CN|ja|ko)\/protect\/image(\/|$)/.test(p);
+}
+
+function matchProtectVideo(p: string) {
+  if (p.startsWith("/protect/video")) return true;
+  return /^\/(en|zh-TW|zh-CN|ja|ko)\/protect\/video(\/|$)/.test(p);
+}
+
+type IconComp = typeof IconPdf;
+
+function SidebarNavLink({
+  href,
+  active,
+  label,
+  icon: Icon,
+  subtitle,
+}: {
+  href: string;
+  active: boolean;
+  label: string;
+  icon: IconComp;
+  subtitle?: string;
+}) {
+  const ref = useRef<HTMLAnchorElement>(null);
+  const [glow, setGlow] = useState({ x: 50, y: 50 });
+
+  const onMove = (e: React.MouseEvent<HTMLAnchorElement>) => {
+    const el = ref.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    setGlow({
+      x: Math.max(5, Math.min(95, ((e.clientX - r.left) / r.width) * 100)),
+      y: Math.max(5, Math.min(95, ((e.clientY - r.top) / r.height) * 100)),
+    });
+  };
+
+  return (
+    <Link
+      ref={ref}
+      href={href}
+      title={label}
+      onMouseMove={onMove}
+      onMouseLeave={() => setGlow({ x: 50, y: 50 })}
+      className={`group relative flex items-center gap-3 overflow-hidden rounded-xl px-2.5 py-2.5 text-sm font-medium transition-[color,box-shadow] duration-200 sm:px-3 ${
+        active
+          ? "bg-sky-500/15 text-sky-200 ring-1 ring-sky-500/35"
+          : "text-slate-400 hover:text-slate-200"
+      } cg-press`}
+    >
+      <span
+        className="pointer-events-none absolute inset-0 rounded-xl opacity-0 transition-opacity duration-300 group-hover:opacity-100"
+        style={{
+          background: `radial-gradient(120px circle at ${glow.x}% ${glow.y}%, rgba(255,255,255,0.14), transparent 68%)`,
+        }}
+        aria-hidden
+      />
+      {active ? (
+        <span
+          className="absolute left-0 top-1/2 z-[2] hidden h-9 w-[2px] -translate-y-1/2 rounded-full bg-gradient-to-b from-cyan-400 via-sky-400 to-emerald-400 shadow-[0_0_16px_rgba(34,211,238,0.9),0_0_8px_rgba(16,185,129,0.5)] sm:block"
+          aria-hidden
+        />
+      ) : null}
+      <Icon
+        className={`relative z-[3] shrink-0 transition-colors ${
+          active ? "text-sky-300" : "text-slate-500 group-hover:text-slate-300"
+        }`}
+      />
+      <span
+        className={`relative z-[3] min-w-0 truncate ${
+          subtitle
+            ? "hidden flex-1 flex-col sm:flex"
+            : "hidden sm:inline sm:max-w-none"
+        }`}
+      >
+        <span className="truncate">{label}</span>
+        {subtitle ? (
+          <span className="truncate text-[10px] font-normal normal-case tracking-normal text-slate-500">
+            {subtitle}
+          </span>
+        ) : null}
+      </span>
+    </Link>
+  );
+}
+
+export function DashboardLayout({ children }: { children: ReactNode }) {
+  const pathname = usePathname();
+  const params = useParams();
+  const { t } = useLanguage();
+
+  const langFromPath: Locale | null =
+    typeof params?.lang === "string" && isLocale(params.lang)
+      ? params.lang
+      : null;
+
+  const langFromUrl = (): Locale | null => {
+    const m = pathname.match(LOCALE_RE);
+    if (m?.[1] && isLocale(m[1])) return m[1] as Locale;
+    return null;
+  };
+
+  const lang: Locale = langFromPath ?? langFromUrl() ?? "en";
+  const base = `/${lang}`;
+
+  type ProtectNav = {
+    href: string;
+    label: string;
+    icon: IconComp;
+    match: (p: string) => boolean;
+    subtitle?: string;
+  };
+
+  const protectItems: ProtectNav[] = [
+    {
+      href: `${base}/protect/pdf`,
+      label: t.dashboardNavPdfGuard,
+      icon: IconPdf,
+      match: matchProtectPdf,
+    },
+    {
+      href: `${base}/protect/image`,
+      label: t.dashboardNavImageGuard,
+      icon: IconImage,
+      match: matchProtectImage,
+    },
+    {
+      href: `${base}/protect/video`,
+      label: t.dashboardNavVideoGuard,
+      icon: IconVideo,
+      match: matchProtectVideo,
+      subtitle: t.dashboardNavVideoSoon,
+    },
+  ];
+
+  const verifyItem = {
+    href: `${base}/verify`,
+    label: t.dashboardNavVerifyHub,
+    icon: IconVerify,
+    match: isVerifyPath,
+  } as const;
+
+  return (
+    <div className="flex min-h-screen bg-slate-950 text-slate-100">
+      <aside
+        className="fixed inset-y-0 left-0 z-40 flex w-[4.25rem] flex-col border-r border-white/10 bg-slate-950/80 shadow-[4px_0_24px_rgba(0,0,0,0.35)] backdrop-blur-md sm:w-56"
+        aria-label={t.dashboardSuiteLabel}
+      >
+        <div className="flex h-14 items-center justify-center border-b border-white/[0.08] px-2 sm:justify-start sm:px-4">
+          <Link
+            href={base}
+            className="cg-press flex min-w-0 items-center gap-2 rounded-lg outline-none ring-sky-500/40 focus-visible:ring-2"
+            aria-label={t.dashboardBrandHomeAria}
+          >
+            <span className="hidden truncate text-xs font-semibold uppercase tracking-[0.2em] text-sky-400/90 sm:block">
+              {t.dashboardSuiteLabel}
+            </span>
+            <span className="text-[10px] font-bold text-sky-400/90 sm:hidden">
+              CG
+            </span>
+          </Link>
+        </div>
+        <nav className="flex flex-1 flex-col gap-0.5 p-2">
+          {protectItems.map((item) => (
+            <SidebarNavLink
+              key={item.href}
+              href={item.href}
+              active={item.match(pathname)}
+              label={item.label}
+              icon={item.icon}
+              subtitle={item.subtitle}
+            />
+          ))}
+
+          <div
+            className="my-2 border-t border-white/[0.08]"
+            role="separator"
+            aria-hidden
+          />
+
+          <SidebarNavLink
+            href={verifyItem.href}
+            active={verifyItem.match(pathname)}
+            label={verifyItem.label}
+            icon={verifyItem.icon}
+          />
+        </nav>
+        <div className="border-t border-white/[0.08] p-2 sm:p-3">
+          <div className="flex justify-center sm:justify-end">
+            <LanguageSelector />
+          </div>
+        </div>
+      </aside>
+
+      <div className="flex min-h-screen flex-1 flex-col pl-[4.25rem] sm:pl-56">
+        <AnimatePresence mode="wait">
+          <motion.main
+            key={pathname}
+            role="main"
+            className="flex-1"
+            initial={{ opacity: 0, y: 18 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 12 }}
+            transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
+          >
+            {children}
+          </motion.main>
+        </AnimatePresence>
+      </div>
+    </div>
+  );
+}

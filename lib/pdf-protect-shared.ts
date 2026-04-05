@@ -1,6 +1,6 @@
 /** Shared limits and helpers for PDF protect (single + batch). */
 
-export const PDF_PROTECT_MAX_BYTES = 25 * 1024 * 1024;
+export const PDF_PROTECT_MAX_BYTES = 50 * 1024 * 1024;
 
 /** Max PDFs in one batch upload (single request). */
 export const PDF_BATCH_MAX_FILES = 12;
