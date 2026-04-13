@@ -1,0 +1,43 @@
+# Grant crawler on a clean Linux runner (avoids local Windows TLS / tooling quirks).
+name: HereForGrant Daily Crawler
+
+on:
+  schedule:
+    # Every hour UTC — change e.g. to '0 0 * * *' for daily at 00:00 UTC
+    - cron: "0 * * * *"
+  workflow_dispatch:
+
+jobs:
+  crawl:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r backend/requirements.txt
+
+      - name: Install Playwright (Chromium + system deps)
+        run: python -m playwright install --with-deps chromium
+        working-directory: backend
+
+      - name: Run crawler
+        working-directory: backend
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          # Optional — add as repository secrets if the crawler uses them:
+          # JINA_API_KEY, GOOGLE_CSE_API_KEY, GOOGLE_CSE_ID, CRAWLER_TARGET_SITES, ...
+        run: python crawler.py

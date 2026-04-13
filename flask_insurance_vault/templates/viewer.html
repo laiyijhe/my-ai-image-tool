@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{{ filename }}</title>
+    <style>
+      :root {
+        font-family: system-ui, sans-serif;
+      }
+      body {
+        margin: 0;
+        display: flex;
+        flex-direction: column;
+        min-height: 100vh;
+      }
+      header {
+        padding: 0.75rem 1rem;
+        background: #0f172a;
+        color: #f8fafc;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 1rem;
+        flex-wrap: wrap;
+      }
+      header a {
+        color: #93c5fd;
+      }
+      .frame-wrap {
+        flex: 1;
+        min-height: 0;
+      }
+      iframe {
+        border: 0;
+        width: 100%;
+        height: calc(100vh - 3.5rem);
+        display: block;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <strong>{{ filename }}</strong>
+      <a href="{{ url_for('index') }}">← Back to list</a>
+    </header>
+    <div class="frame-wrap">
+      <iframe
+        title="{{ filename }}"
+        src="{{ url_for('serve_file', filename=filename) }}"
+      ></iframe>
+    </div>
+  </body>
+</html>

@@ -1,6 +1,7 @@
 "use client";
 
 import { LanguageSelector } from "@/components/LanguageSelector";
+import { UserActionsToolbar } from "@/components/navigation/UserActionsToolbar";
 import { isLocale } from "@/lib/i18n/dictionary";
 import { useLanguage } from "@/lib/i18n/language-context";
 import type { Locale } from "@/lib/i18n/types";
@@ -9,6 +10,17 @@ import Link from "next/link";
 import { useParams, usePathname } from "next/navigation";
 import type { ReactNode } from "react";
 import { useRef, useState } from "react";
+
+const SIDEBAR_COLLAPSED_PX = 72;
+const SIDEBAR_EXPANDED_PX = 240;
+
+/** Slightly overdamped vs V8.3 so main-column reflow does not thrash line breaks while the rail expands. */
+const sidebarSpring = {
+  type: "spring" as const,
+  stiffness: 320,
+  damping: 44,
+  mass: 1,
+};
 
 function IconPdf({ className }: { className?: string }) {
   return (
@@ -122,12 +134,14 @@ function SidebarNavLink({
   label,
   icon: Icon,
   subtitle,
+  expanded,
 }: {
   href: string;
   active: boolean;
   label: string;
   icon: IconComp;
   subtitle?: string;
+  expanded: boolean;
 }) {
   const ref = useRef<HTMLAnchorElement>(null);
   const [glow, setGlow] = useState({ x: 50, y: 50 });
@@ -142,14 +156,19 @@ function SidebarNavLink({
     });
   };
 
+  const tooltip =
+    subtitle && subtitle.length > 0 ? `${label} — ${subtitle}` : label;
+
   return (
     <Link
       ref={ref}
       href={href}
-      title={label}
+      title={!expanded ? tooltip : undefined}
       onMouseMove={onMove}
       onMouseLeave={() => setGlow({ x: 50, y: 50 })}
-      className={`group relative flex items-center gap-3 overflow-hidden rounded-xl px-2.5 py-2.5 text-sm font-medium transition-[color,box-shadow] duration-200 sm:px-3 ${
+      className={`group relative flex items-center overflow-hidden rounded-xl py-2.5 text-sm font-medium transition-[color,box-shadow] duration-200 ${
+        expanded ? "gap-3 px-3" : "justify-center px-0"
+      } ${
         active
           ? "bg-sky-500/15 text-sky-200 ring-1 ring-sky-500/35"
           : "text-slate-400 hover:text-slate-200"
@@ -162,9 +181,9 @@ function SidebarNavLink({
         }}
         aria-hidden
       />
-      {active ? (
+      {active && expanded ? (
         <span
-          className="absolute left-0 top-1/2 z-[2] hidden h-9 w-[2px] -translate-y-1/2 rounded-full bg-gradient-to-b from-cyan-400 via-sky-400 to-emerald-400 shadow-[0_0_16px_rgba(34,211,238,0.9),0_0_8px_rgba(16,185,129,0.5)] sm:block"
+          className="absolute left-0 top-1/2 z-[2] h-9 w-[2px] -translate-y-1/2 rounded-full bg-gradient-to-b from-cyan-400 via-sky-400 to-emerald-400 shadow-[0_0_16px_rgba(34,211,238,0.9),0_0_8px_rgba(16,185,129,0.5)]"
           aria-hidden
         />
       ) : null}
@@ -173,20 +192,27 @@ function SidebarNavLink({
           active ? "text-sky-300" : "text-slate-500 group-hover:text-slate-300"
         }`}
       />
-      <span
-        className={`relative z-[3] min-w-0 truncate ${
-          subtitle
-            ? "hidden flex-1 flex-col sm:flex"
-            : "hidden sm:inline sm:max-w-none"
-        }`}
-      >
-        <span className="truncate">{label}</span>
-        {subtitle ? (
-          <span className="truncate text-[10px] font-normal normal-case tracking-normal text-slate-500">
-            {subtitle}
-          </span>
+      <AnimatePresence initial={false}>
+        {expanded ? (
+          <motion.span
+            key="nav-label"
+            initial={{ opacity: 0, x: -8 }}
+            animate={{ opacity: 1, x: 0 }}
+            exit={{ opacity: 0, x: -8 }}
+            transition={{ type: "spring", stiffness: 480, damping: 38 }}
+            className={`relative z-[3] min-w-0 flex-1 ${
+              subtitle ? "flex flex-col" : "truncate"
+            }`}
+          >
+            <span className="truncate">{label}</span>
+            {subtitle ? (
+              <span className="truncate text-[10px] font-normal normal-case tracking-normal text-slate-500">
+                {subtitle}
+              </span>
+            ) : null}
+          </motion.span>
         ) : null}
-      </span>
+      </AnimatePresence>
     </Link>
   );
 }
@@ -195,6 +221,8 @@ export function DashboardLayout({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const params = useParams();
   const { t } = useLanguage();
+  const [isCollapsed, setIsCollapsed] = useState(true);
+  const [isHovered, setIsHovered] = useState(false);
 
   const langFromPath: Locale | null =
     typeof params?.lang === "string" && isLocale(params.lang)
@@ -247,27 +275,73 @@ export function DashboardLayout({ children }: { children: ReactNode }) {
     match: isVerifyPath,
   } as const;
 
+  const expanded = !isCollapsed;
+
+  const onSidebarEnter = () => {
+    setIsHovered(true);
+    setIsCollapsed(false);
+  };
+
+  const onSidebarLeave = () => {
+    setIsHovered(false);
+    setIsCollapsed(true);
+  };
+
   return (
     <div className="flex min-h-screen bg-slate-950 text-slate-100">
-      <aside
-        className="fixed inset-y-0 left-0 z-40 flex w-[4.25rem] flex-col border-r border-white/10 bg-slate-950/80 shadow-[4px_0_24px_rgba(0,0,0,0.35)] backdrop-blur-md sm:w-56"
+      <motion.aside
+        initial={false}
+        animate={{
+          width: isCollapsed ? SIDEBAR_COLLAPSED_PX : SIDEBAR_EXPANDED_PX,
+        }}
+        transition={sidebarSpring}
+        onMouseEnter={onSidebarEnter}
+        onMouseLeave={onSidebarLeave}
+        className="fixed inset-y-0 left-0 z-40 flex flex-col overflow-hidden border-r border-white/10 bg-slate-950/80 shadow-[4px_0_24px_rgba(0,0,0,0.35)] backdrop-blur-md"
         aria-label={t.dashboardSuiteLabel}
+        aria-expanded={expanded}
+        data-collapsed={isCollapsed ? "true" : "false"}
+        data-hovered={isHovered ? "true" : "false"}
       >
-        <div className="flex h-14 items-center justify-center border-b border-white/[0.08] px-2 sm:justify-start sm:px-4">
+        <div
+          className={`flex h-14 shrink-0 items-center border-b border-white/[0.08] px-2 ${
+            expanded ? "justify-start px-4" : "justify-center"
+          }`}
+        >
           <Link
             href={base}
+            title={!expanded ? t.dashboardSuiteLabel : undefined}
             className="cg-press flex min-w-0 items-center gap-2 rounded-lg outline-none ring-sky-500/40 focus-visible:ring-2"
             aria-label={t.dashboardBrandHomeAria}
           >
-            <span className="hidden truncate text-xs font-semibold uppercase tracking-[0.2em] text-sky-400/90 sm:block">
-              {t.dashboardSuiteLabel}
-            </span>
-            <span className="text-[10px] font-bold text-sky-400/90 sm:hidden">
-              CG
-            </span>
+            <AnimatePresence initial={false} mode="popLayout">
+              {expanded ? (
+                <motion.span
+                  key="suite-title"
+                  initial={{ opacity: 0, x: -6 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  exit={{ opacity: 0, x: -6 }}
+                  transition={{ type: "spring", stiffness: 480, damping: 38 }}
+                  className="truncate text-xs font-semibold uppercase tracking-[0.2em] text-sky-400/90"
+                >
+                  {t.dashboardSuiteLabel}
+                </motion.span>
+              ) : (
+                <motion.span
+                  key="suite-cg"
+                  initial={{ opacity: 0, scale: 0.92 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  exit={{ opacity: 0, scale: 0.92 }}
+                  transition={{ type: "spring", stiffness: 480, damping: 38 }}
+                  className="text-[10px] font-bold text-sky-400/90"
+                >
+                  CG
+                </motion.span>
+              )}
+            </AnimatePresence>
           </Link>
         </div>
-        <nav className="flex flex-1 flex-col gap-0.5 p-2">
+        <nav className="flex flex-1 flex-col gap-0.5 overflow-x-hidden overflow-y-auto p-2">
           {protectItems.map((item) => (
             <SidebarNavLink
               key={item.href}
@@ -276,6 +350,7 @@ export function DashboardLayout({ children }: { children: ReactNode }) {
               label={item.label}
               icon={item.icon}
               subtitle={item.subtitle}
+              expanded={expanded}
             />
           ))}
 
@@ -290,21 +365,32 @@ export function DashboardLayout({ children }: { children: ReactNode }) {
             active={verifyItem.match(pathname)}
             label={verifyItem.label}
             icon={verifyItem.icon}
+            expanded={expanded}
           />
         </nav>
-        <div className="border-t border-white/[0.08] p-2 sm:p-3">
-          <div className="flex justify-center sm:justify-end">
+        <div className="shrink-0 border-t border-white/[0.08] p-2 sm:p-3">
+          <div
+            className={`flex ${expanded ? "justify-end" : "justify-center"}`}
+          >
             <LanguageSelector />
           </div>
         </div>
-      </aside>
+      </motion.aside>
 
-      <div className="flex min-h-screen flex-1 flex-col pl-[4.25rem] sm:pl-56">
+      <motion.div
+        className="flex min-h-screen min-w-0 flex-1 flex-col"
+        initial={false}
+        animate={{ paddingLeft: isCollapsed ? SIDEBAR_COLLAPSED_PX : SIDEBAR_EXPANDED_PX }}
+        transition={sidebarSpring}
+      >
+        <header className="sticky top-0 z-30 flex min-h-[3.25rem] shrink-0 items-center justify-end gap-3 border-b border-slate-200/90 bg-canvas/95 px-3 py-2 backdrop-blur-sm sm:min-h-14 sm:px-5 supports-[backdrop-filter]:bg-canvas/85">
+          <UserActionsToolbar lang={lang} surface="light" />
+        </header>
         <AnimatePresence mode="wait">
           <motion.main
             key={pathname}
             role="main"
-            className="flex-1"
+            className="flex-1 bg-canvas"
             initial={{ opacity: 0, y: 18 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: 12 }}
@@ -313,7 +399,7 @@ export function DashboardLayout({ children }: { children: ReactNode }) {
             {children}
           </motion.main>
         </AnimatePresence>
-      </div>
+      </motion.div>
     </div>
   );
 }

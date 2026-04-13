@@ -2,6 +2,7 @@
 
 import { LanguageSelector } from "@/components/LanguageSelector";
 import { useLanguage } from "@/lib/i18n/language-context";
+import { isValidMemberIdentityToken } from "@/lib/member-identity";
 import {
   CreatorGuardPdfError,
   protectPdfWithCreatorGuard,
@@ -88,14 +89,20 @@ function ClaimSuspenseFallback() {
 function ClaimContent() {
   const { t } = useLanguage();
   const searchParams = useSearchParams();
-  const emailRaw = searchParams.get("email");
-  const email = emailRaw ? decodeURIComponent(emailRaw.trim()) : "";
+  const identityRaw =
+    searchParams.get("memberId") ?? searchParams.get("email");
+  const memberIdentity = identityRaw
+    ? decodeURIComponent(identityRaw.trim())
+    : "";
+  const identityOk = isValidMemberIdentityToken(memberIdentity);
   const fileUrl = searchParams.get("fileUrl");
   const fileId = searchParams.get("fileId");
 
-  const [phase, setPhase] = useState<Phase>(email ? "fetching" : "error");
+  const [phase, setPhase] = useState<Phase>(
+    identityOk ? "fetching" : "error"
+  );
   const [errorDetail, setErrorDetail] = useState<string | null>(() =>
-    !email ? t.claimPageMissingEmail : null
+    !identityOk ? t.claimPageMissingMemberIdentity : null
   );
   const [outputBlob, setOutputBlob] = useState<Blob | null>(null);
   const [downloadFileName, setDownloadFileName] = useState(
@@ -107,9 +114,9 @@ function ClaimContent() {
   tRef.current = t;
 
   useEffect(() => {
-    if (!email) {
+    if (!isValidMemberIdentityToken(memberIdentity)) {
       setPhase("error");
-      setErrorDetail(tRef.current.claimPageMissingEmail);
+      setErrorDetail(tRef.current.claimPageMissingMemberIdentity);
       return;
     }
 
@@ -141,14 +148,14 @@ function ClaimContent() {
         setPhase("embedding");
 
         const out = await protectPdfWithCreatorGuard(new Uint8Array(buf), {
-          buyerEmail: email,
+          buyerEmail: memberIdentity,
         });
         if (ac.signal.aborted) return;
 
         const copy = new Uint8Array(out.byteLength);
         copy.set(out);
         const blob = new Blob([copy], { type: "application/pdf" });
-        const slug = email.replace(/[^\w@.-]+/g, "_").slice(0, 80);
+        const slug = memberIdentity.replace(/[^\w@.-]+/g, "_").slice(0, 80);
         const name = `creator-guard-${slug}.pdf`;
         setOutputBlob(blob);
         setDownloadFileName(name);
@@ -171,7 +178,7 @@ function ClaimContent() {
     })();
 
     return () => ac.abort();
-  }, [email, fileUrl, fileId]);
+  }, [memberIdentity, fileUrl, fileId]);
 
   const onManualDownload = useCallback(() => {
     if (!outputBlob) return;
@@ -207,8 +214,10 @@ function ClaimContent() {
                   {t.claimPageLoading}
                 </p>
                 <p className="mt-2 text-xs text-slate-500">
-                  {email ? (
-                    <span className="break-all text-slate-400">{email}</span>
+                  {memberIdentity ? (
+                    <span className="break-all text-slate-400">
+                      {memberIdentity}
+                    </span>
                   ) : null}
                 </p>
               </div>
@@ -222,7 +231,7 @@ function ClaimContent() {
               </span>
               <div>
                 <p className="font-medium text-slate-100">
-                  {tpl(t.claimPageFingerprinting, { email })}
+                  {tpl(t.claimPageFingerprinting, { memberId: memberIdentity })}
                 </p>
                 <div className="mt-3 h-1 overflow-hidden rounded-full bg-slate-800">
                   <div className="h-full w-2/3 animate-pulse rounded-full bg-sky-500/70" />

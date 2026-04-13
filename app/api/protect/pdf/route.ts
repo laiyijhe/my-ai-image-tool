@@ -4,6 +4,7 @@ import {
   isLikelyPdfBuffer,
   protectPdfWithCreatorGuard,
 } from "@/lib/pdf-guard";
+import { parseOptionalPlanType } from "@/lib/plan-types";
 import { PDF_PROTECT_MAX_BYTES, safePdfFileName } from "@/lib/pdf-protect-shared";
 import { type NextRequest, NextResponse } from "next/server";
 
@@ -23,11 +24,15 @@ export async function POST(request: NextRequest) {
 
   const buyerEmail = String(formData.get("buyerEmail") ?? "").trim();
   const userId = String(formData.get("userId") ?? "").trim();
+  const planType = parseOptionalPlanType(formData.get("planType"));
   const file = formData.get("file");
 
   if (!buyerEmail) {
     return NextResponse.json(
-      { error: "Missing buyerEmail", message: "Provide the buyer email." },
+      {
+        error: "Missing buyerEmail",
+        message: "Provide member identity in the `buyerEmail` field (1–64 characters).",
+      },
       { status: 400 }
     );
   }
@@ -75,6 +80,7 @@ export async function POST(request: NextRequest) {
     const out = await protectPdfWithCreatorGuard(buf, {
       buyerEmail,
       userId: userId || undefined,
+      planType,
     });
     const body = Buffer.from(out);
 
@@ -91,7 +97,11 @@ export async function POST(request: NextRequest) {
   } catch (e) {
     if (e instanceof CreatorGuardPdfError) {
       const status =
-        e.code === "encrypted_pdf" ? 422 : e.code === "invalid_email" ? 400 : 400;
+        e.code === "encrypted_pdf"
+          ? 422
+          : e.code === "invalid_email" || e.code === "invalid_member_identity"
+            ? 400
+            : 400;
       return NextResponse.json(
         { error: e.code, message: e.message },
         { status }

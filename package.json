@@ -5,11 +5,13 @@
   "description": "Creator Guard dashboard (Next.js App Router). Homepage: app/page.tsx. Do not add pages/ or src/pages/.",
   "scripts": {
     "dev": "next dev",
+    "dev:webpack": "next dev --webpack",
     "build": "next build",
     "start": "next start",
     "lint": "eslint .",
     "test:ui": "playwright test --ui",
-    "clean": "node -e \"require('fs').rmSync('.next',{recursive:true,force:true});\""
+    "clean": "node -e \"require('fs').rmSync('.next',{recursive:true,force:true});\"",
+    "gen:favicons": "node scripts/gen-favicons.mjs"
   },
   "engines": {
     "node": ">=18.18.0"
@@ -20,11 +22,16 @@
     "@dnd-kit/utilities": "^3.2.2",
     "@line/liff": "^2.28.0",
     "@react-email/components": "^1.0.11",
+    "@supabase/ssr": "^0.10.0",
+    "@supabase/supabase-js": "^2.101.1",
     "@vercel/blob": "^2.3.2",
+    "canvas-confetti": "^1.9.4",
     "cloudinary": "^2.9.0",
     "framer-motion": "^11.18.2",
     "html2canvas": "^1.4.1",
+    "jspdf": "^4.2.1",
     "jszip": "^3.10.1",
+    "lucide-react": "^0.562.0",
     "next": "16.1.7",
     "pdf-lib": "^1.17.1",
     "react": "19.2.3",
@@ -33,16 +40,19 @@
     "react-image-crop": "^11.0.10",
     "replicate": "^1.4.0",
     "resend": "^6.10.0",
-    "sharp": "^0.34.5"
+    "sharp": "^0.34.5",
+    "stripe": "^22.0.0"
   },
   "devDependencies": {
     "@playwright/test": "^1.59.1",
     "@tailwindcss/postcss": "^4",
+    "@types/canvas-confetti": "^1.9.0",
     "@types/node": "^20.19.37",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "eslint": "^9",
     "eslint-config-next": "16.1.7",
+    "png-to-ico": "^3.0.1",
     "tailwindcss": "^4",
     "typescript": "^5"
   }

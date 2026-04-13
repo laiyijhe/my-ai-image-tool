@@ -1,0 +1,36 @@
+version: '3.8'
+
+services:
+  backend:
+    # 搜尋 API（給網頁用）
+    build: ./backend
+    ports:
+      - "8001:8000"
+    command: uvicorn main:app --host 0.0.0.0 --port 8000
+    restart: always
+    env_file: .env
+    volumes:
+      - ./backend:/app
+    extra_hosts:
+      - "uvamltokxulrwjoxdpgk.supabase.co:172.64.149.246"
+
+  worker:
+    # 收割機（專門跑爬蟲）— host 網路：沿用主機 DNS / hosts（Linux；Windows Docker 行為可能不同）
+    build: ./backend
+    command: python crawler.py
+    network_mode: "host"
+    restart: always
+    env_file: .env
+    volumes:
+      - ./backend:/app
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "3005:3000"
+    env_file: .env
+    volumes:
+      - ./frontend:/app
+    environment:
+      - NEXT_PUBLIC_API=http://localhost:8001
+      - BACKEND_INTERNAL_URL=http://backend:8000

@@ -4,9 +4,10 @@ import {
   isLikelyPdfBuffer,
   protectPdfWithCreatorGuard,
 } from "@/lib/pdf-guard";
+import { parseOptionalPlanType } from "@/lib/plan-types";
 import {
   PDF_BATCH_MAX_COMBOS,
-  PDF_BATCH_MAX_EMAILS,
+  PDF_BATCH_MAX_MEMBER_IDENTITIES,
   PDF_BATCH_MAX_FILES,
   PDF_PROTECT_MAX_BYTES,
   parseEmailListFromRaw,
@@ -31,6 +32,7 @@ export async function POST(request: NextRequest) {
 
   const rawEmails = String(formData.get("emails") ?? "");
   const emails = parseEmailListFromRaw(rawEmails);
+  const planType = parseOptionalPlanType(formData.get("planType"));
 
   const fileEntries = formData.getAll("files");
   const files = fileEntries.filter((x): x is File => x instanceof File);
@@ -48,8 +50,9 @@ export async function POST(request: NextRequest) {
   if (emails.length === 0) {
     return NextResponse.json(
       {
-        error: "Missing emails",
-        message: "Provide at least one valid email in the `emails` field.",
+        error: "Missing member identities",
+        message:
+          "Provide at least one member identity in the `emails` field (comma / newline separated, 1–64 chars each).",
       },
       { status: 400 }
     );
@@ -65,11 +68,11 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  if (emails.length > PDF_BATCH_MAX_EMAILS) {
+  if (emails.length > PDF_BATCH_MAX_MEMBER_IDENTITIES) {
     return NextResponse.json(
       {
-        error: "Too many emails",
-        message: `Maximum ${PDF_BATCH_MAX_EMAILS} distinct emails per batch.`,
+        error: "Too many identities",
+        message: `Maximum ${PDF_BATCH_MAX_MEMBER_IDENTITIES} distinct member identities per batch.`,
       },
       { status: 400 }
     );
@@ -80,7 +83,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json(
       {
         error: "Batch too large",
-        message: `Too many combinations (${combos}). Max ${PDF_BATCH_MAX_COMBOS} (files × emails). Use the dashboard batch loop or split the job.`,
+        message: `Too many combinations (${combos}). Max ${PDF_BATCH_MAX_COMBOS} (files × identities). Use the dashboard batch loop or split the job.`,
       },
       { status: 400 }
     );
@@ -131,7 +134,10 @@ export async function POST(request: NextRequest) {
       }
 
       for (const buyerEmail of emails) {
-        const out = await protectPdfWithCreatorGuard(buf, { buyerEmail });
+        const out = await protectPdfWithCreatorGuard(buf, {
+          buyerEmail,
+          planType,
+        });
         const name = protectedPdfZipEntryName(file.name, buyerEmail, outIndex);
         zip.file(name, Buffer.from(out));
         outIndex += 1;
@@ -157,7 +163,11 @@ export async function POST(request: NextRequest) {
   } catch (e) {
     if (e instanceof CreatorGuardPdfError) {
       const status =
-        e.code === "encrypted_pdf" ? 422 : e.code === "invalid_email" ? 400 : 400;
+        e.code === "encrypted_pdf"
+          ? 422
+          : e.code === "invalid_email" || e.code === "invalid_member_identity"
+            ? 400
+            : 400;
       return NextResponse.json(
         { error: e.code, message: e.message },
         { status }

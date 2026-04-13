@@ -1,6 +1,6 @@
 import { redirect } from "next/navigation";
 
-/** Root `/` sends users to the default-locale marketing home. */
+/** Root `/` — Taiwan-core default locale. */
 export default function RootPage() {
-  redirect("/en");
+  redirect("/zh-TW");
 }

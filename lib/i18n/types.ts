@@ -88,6 +88,7 @@ export type Messages = {
   quickTestGenerate: string;
   quickTestNeedImage: string;
   quickTestNeedMember: string;
+  quickTestInvalidMemberId: string;
   quickTestFailed: string;
   quickTestWorking: string;
   quickTestProcessingWait: string;
@@ -128,7 +129,7 @@ export type Messages = {
   verifyPdfAnalyzing: string;
   verifyPdfGhostDetected: string;
   verifyPdfCleanDoc: string;
-  verifyPdfBuyerEmail: string;
+  verifyPdfMemberIdentity: string;
   verifyPdfMemberId: string;
   verifyPdfTimestamp: string;
   verifyPdfVersion: string;
@@ -176,9 +177,16 @@ export type Messages = {
   protectPdfEmailSentTitle: string;
   protectPdfSelectGroup: string;
   protectPdfSavedInPrefix: string;
+  protectPdfGroupsSourceHint: string;
   protectPdfLoadingSuffix: string;
   protectPdfPickGroupPlaceholder: string;
   protectPdfQuickBadges: string;
+  /** Shown when no group is selected in the sidebar member preview. */
+  protectPdfGroupMembersPlaceholder: string;
+  protectPdfGroupMembersTitle: string;
+  protectPdfGroupMembersEmpty: string;
+  /** Groups list syncing (auth or Supabase fetch). */
+  protectPdfGroupsSyncing: string;
   protectPdfRemoveGroup: string;
   protectPdfRemoveGroupAria: string;
   protectPdfNoGroupsHint: string;
@@ -195,6 +203,8 @@ export type Messages = {
   protectPdfProtectingWithCount: string;
   protectPdfStartBatch: string;
   protectPdfErrNoValidPdfsDropped: string;
+  /** Shown when user tries to add a non-PDF to the batch queue (e.g. double-click). */
+  protectPdfErrBatchQueuePdfOnly: string;
   protectPdfErrSomeSkipped: string;
   protectPdfErrNeedPdf: string;
   protectPdfErrNeedEmail: string;
@@ -205,6 +215,7 @@ export type Messages = {
   protectPdfErrGeneric: string;
   protectPdfErrGroupName: string;
   protectPdfErrPasteEmails: string;
+  protectPdfErrSendEmailNeedsValidEmail: string;
   protectPdfErrEmailSendFailed: string;
   protectPdfOneValidEmail: string;
   protectPdfManyValidEmails: string;
@@ -214,6 +225,10 @@ export type Messages = {
   protectPdfFileRemove: string;
   protectPdfProgressFilesLabel: string;
   protectPdfProgressSteps: string;
+  protectPdfOverlayProcessingMember: string;
+  protectPdfOverlayMembersCaption: string;
+  protectPdfOverlaySafetyVerified: string;
+  protectPdfDownloadAllZip: string;
   /** Smart group / history (V2.3) */
   protectPdfRecentlyUsed: string;
   protectPdfSaveNewListTip: string;
@@ -262,6 +277,65 @@ export type Messages = {
   homeCtaStartProtecting: string;
   homeCtaVerifyEvidence: string;
   homeLinkAdvancedPortal: string;
+  /** Top nav — primary portal entry (V6.3) */
+  navAdminCenter: string;
+  /** Home member portal card CTA */
+  homeEnterAdminDashboard: string;
+  homeMemberPortalBlurb: string;
+  /** Taiwan portal quick link to universal verify */
+  portalJumpToVerify: string;
+  /** Home landing V6.5 — member entry hero */
+  homeHeroEntryTitle: string;
+  /** Shown directly under the home H1 (e.g. Founders scarcity line for audits). */
+  homeHeroFounderAuditLine: string;
+  homeHeroEntrySubtitle: string;
+  homeWelcomeBack: string;
+  /** Home hero — paid plans / pricing entry (always visible; falls back to /pricing). */
+  homeCtaPremiumEntry: string;
+  /** V6.11 — single primary OAuth CTA on home hero. */
+  homeCtaGetStartedCreatorLogin: string;
+  /** V7 — large Canva-style home headline (zh-TW core market). */
+  homeHeroCanvaTitle: string;
+  homeHeroCanvaSubtitle: string;
+  homeCtaFreeStartProtect: string;
+  /** Supabase Google auth (V6.4) */
+  authLogin: string;
+  authLoginWithGoogle: string;
+  authLoginWithApple: string;
+  /** Shown when Apple OAuth is temporarily disabled (facade / maintenance). */
+  authAppleLoginMaintenance: string;
+  authLogout: string;
+  /** Shown in the navbar for paid plans (Pro / yearly / lifetime). */
+  authPremiumMemberBadge: string;
+  authAccessDenied: string;
+  authRestrictedHint: string;
+  /** V7 — Auth modal (Canva-style) */
+  authModalHeadline: string;
+  authModalSubline: string;
+  authModalContinueGoogle: string;
+  authModalContinueFacebook: string;
+  authModalContinueEmail: string;
+  authModalEmailPlaceholder: string;
+  authModalEmailSubmit: string;
+  authModalEmailCheckInbox: string;
+  authModalEmailInvalid: string;
+  authModalCloseAria: string;
+  /** OAuth /auth/callback failure landing (V8.0). */
+  authErrorCallbackTitle: string;
+  authErrorCallbackBody: string;
+  authErrorCallbackCtaHome: string;
+  navLogIn: string;
+  navSignUp: string;
+  /** Primary nav CTA → member portal (groups & delivery). */
+  navManageMembersGroups: string;
+  /** Site footer + legal (V6.10 — payment / ECPay compliance) */
+  footerTerms: string;
+  footerPrivacy: string;
+  footerPricing: string;
+  legalTermsTitle: string;
+  legalPrivacyTitle: string;
+  legalEffectiveDate: string;
+  legalBackHome: string;
   portalBackHome: string;
   portalWorkspaceTitle: string;
   portalWorkspaceSubtitle: string;
@@ -271,10 +345,33 @@ export type Messages = {
   dashboardNavVerifyHub: string;
   protectPdfLivePreview: string;
   protectPdfLivePreviewEmpty: string;
+  /** V8.5 — File System Access API folder browser */
+  protectPdfOpenFolder: string;
+  /** Clears local folder selection (sidebar) */
+  protectPdfCancelLocal: string;
+  /** aria-label / title for vault refresh icon control */
+  protectPdfVaultRefreshAria: string;
+  protectPdfBrowserSearchPlaceholder: string;
+  protectPdfBrowserEmpty: string;
+  protectPdfBrowserNoMatch: string;
+  protectPdfBrowserUnsupported: string;
+  protectPdfImagePreviewBatchHint: string;
+  protectPdfOrDropPdfs: string;
+  protectPdfPdfDoubleClickHint: string;
   protectPdfQueueTitle: string;
   protectPdfQueuePending: string;
   protectPdfQueueProtecting: string;
   protectPdfQueueReady: string;
+  /** Centered hint inside the dashed queue dropzone when empty */
+  protectPdfQueueDropEmptyHint: string;
+  /** Primary CTA when exactly one PDF is queued */
+  protectPdfProtectNFilesOne: string;
+  /** Primary CTA when multiple PDFs queued; use tpl with {count} */
+  protectPdfProtectNFilesMany: string;
+  /** Queue protect button when the queue is empty (disabled) */
+  protectPdfQueueAddPdfsFirst: string;
+  /** aria-label for compact remove (X) on a queued file card */
+  protectPdfRemoveFromQueueAria: string;
   protectImageComingTitle: string;
   protectImageComingBody: string;
   protectVideoComingTitle: string;
@@ -310,5 +407,108 @@ export type Messages = {
   claimPageSuccess: string;
   claimPageError: string;
   claimPageManualDownload: string;
-  claimPageMissingEmail: string;
+  claimPageMissingMemberIdentity: string;
+  portalOrganizeTitle: string;
+  portalOrganizeHint: string;
+  portalGroupUnassigned: string;
+  portalMockGroupVip: string;
+  portalMockGroupStandard: string;
+  portalMemberMovedToast: string;
+  /** Taiwan swipe portal (V5) — EN fallbacks; zh-TW copy lives in locales/zh-TW.ts */
+  portalSwiperTitle: string;
+  portalSwiperSubtitle: string;
+  portalSwipeRightLabel: string;
+  portalSwipeLeftLabel: string;
+  portalSwipeEmpty: string;
+  portalContactIdentity: string;
+  portalContactSource: string;
+  portalContactDate: string;
+  portalManageGroupsTitle: string;
+  portalManageGroupsHint: string;
+  portalNewGroupNamePlaceholder: string;
+  portalAddGroup: string;
+  portalRemoveGroupAria: string;
+  portalGroupedSectionTitle: string;
+  portalGroupedSectionHint: string;
+  portalMembersCountTpl: string;
+  portalAuthorizedGroupName: string;
+  portalIgnoredGroupName: string;
+  portalPendingReviewTitle: string;
+  portalToastAuthorized: string;
+  portalToastIgnored: string;
+  portalGroupDeletedToast: string;
+  portalImportMockHint: string;
+  /** Hybrid portal V5.1 */
+  portalViewModeSwipe: string;
+  portalViewModeList: string;
+  portalSearchPlaceholder: string;
+  portalSelectedCountTpl: string;
+  portalActionMoveToGroupLabel: string;
+  portalActionApplyMove: string;
+  portalActionClearSelection: string;
+  portalTableGroupColumn: string;
+  portalSelectAllFilteredAria: string;
+  portalListShiftHint: string;
+  /** Batch PDF handoff from portal (V5.2) */
+  portalActionBatchProtectPdf: string;
+  portalClearSelectionAria: string;
+  /** Add member modal (V5.3) */
+  portalAddMemberTitle: string;
+  portalAddMemberIdentity: string;
+  portalAddMemberIdentityPlaceholder: string;
+  portalAddMemberSource: string;
+  portalAddMemberSourcePlaceholder: string;
+  portalAddMemberInitialGroup: string;
+  portalAddMemberPendingOption: string;
+  portalAddMemberSubmit: string;
+  portalAddMemberCancel: string;
+  portalAddMemberErrEmptyIdentity: string;
+  portalAddMemberSuccessTpl: string;
+  portalAddMemberFabAria: string;
+  /** Portal V5.4 — multi-group tags & quick PDF */
+  portalActionManageTagsGroupsLabel: string;
+  portalMemberTagsAppliedToast: string;
+  portalFilterUnassignedLabel: string;
+  portalFilterUnassignedAria: string;
+  portalQuickProtectPdf: string;
+  portalTableActionsColumn: string;
+  /** Cloud sync (V6.1) */
+  portalCloudSyncOffline: string;
+  portalCloudSyncBusy: string;
+  portalCloudSyncOk: string;
+  portalCloudSyncError: string;
+  portalCloudSyncToastOk: string;
+  /** Free-tier limit + Pro upsell (V6.6) */
+  portalUpgradeTitle: string;
+  portalUpgradeBody: string;
+  portalUpgradeCta: string;
+  portalUpgradeLater: string;
+  /** In-app plan ribbon (portal) */
+  portalFreePlanRibbon: string;
+  portalPremiumRibbon: string;
+  pricingPageTitle: string;
+  pricingPagePlaceholder: string;
+  pricingPageSubtitle: string;
+  pricingCardProTitle: string;
+  pricingCardProDescription: string;
+  pricingCardProPrice: string;
+  pricingCardProPeriod: string;
+  pricingBuyNowPro: string;
+  pricingCardFounderTitle: string;
+  pricingCardFounderDescription: string;
+  pricingCardFounderPrice: string;
+  pricingCardFounderPeriod: string;
+  pricingBuyNowFounder: string;
+  pricingFounderBadge: string;
+  /** Short scarcity badge on the Founders card (distinct from {@link pricingFounderBadge}). */
+  pricingFounderSlotsOnlyBadge: string;
+  /** Use `{count}` for hardcoded founders slot display, e.g. "100". */
+  pricingFoundersSlotsLine: string;
+  pricingCheckoutFootnote: string;
+  pricingCheckoutConfigureHint: string;
+  pricingSkipToPortal: string;
+  successPageTitle: string;
+  successPageSubtitle: string;
+  successEnterDashboardCta: string;
+  successViewPricingAgain: string;
 };

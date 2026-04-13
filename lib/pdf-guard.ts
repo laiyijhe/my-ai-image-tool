@@ -1,17 +1,21 @@
 import {
-  EncryptedPDFError,
-  PDFDocument,
-  rgb,
-  StandardFonts,
-} from "pdf-lib";
+  isValidMemberIdentityToken,
+  MEMBER_IDENTITY_MAX_LEN,
+} from "@/lib/member-identity";
+import {
+  applyCreatorGuardToPdfBytes,
+  CreatorGuardPdfCoreError,
+} from "@/lib/pdf-guard-core";
+import type { PlanType } from "@/lib/plan-types";
 
 export type CreatorGuardPdfOptions = {
+  /** Primary licensed identity (member ID / handle; 1–64 chars). */
   buyerEmail: string;
-  /** Optional member / account id (defaults to email). */
+  /** Optional member / account id (defaults to buyer identity). */
   userId?: string;
+  /** When `'free'`, adds visible “Protected by Creator Guard” footer on each page. */
+  planType?: PlanType;
 };
-
-const EMAIL_MAX = 320;
 
 /**
  * PDF 32000 permission bits live under `/Encrypt` (`/P`). **pdf-lib** cannot set them on save;
@@ -22,68 +26,20 @@ export async function protectPdfWithCreatorGuard(
   input: Uint8Array,
   opts: CreatorGuardPdfOptions
 ): Promise<Uint8Array> {
-  const buyerEmail = normalizeBuyerEmail(opts.buyerEmail);
+  const buyerEmail = normalizeMemberIdentity(opts.buyerEmail);
   const userId = (opts.userId?.trim() || buyerEmail).slice(0, 256);
-  const fingerprintTs = new Date().toISOString();
-  /** Forensic pipe token for `/verify/pdf` (Email|ID|TS). */
-  const pipeFingerprint = `CreatorGuard:${buyerEmail}|${userId}|${fingerprintTs}`;
-
-  let pdfDoc: PDFDocument;
   try {
-    pdfDoc = await PDFDocument.load(input, { updateMetadata: true });
+    return await applyCreatorGuardToPdfBytes(input, {
+      buyerEmail,
+      userId,
+      planType: opts.planType,
+    });
   } catch (e) {
-    if (e instanceof EncryptedPDFError) {
-      throw new CreatorGuardPdfError(
-        "encrypted_pdf",
-        "This PDF is password-protected. Remove encryption or supply a decrypted file."
-      );
+    if (e instanceof CreatorGuardPdfCoreError) {
+      throw new CreatorGuardPdfError(e.code, e.message);
     }
     throw e;
   }
-
-  const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
-  const watermark = `Licensed to ${buyerEmail}`;
-  const fontSize = 9;
-  const footerGray = rgb(0.34, 0.35, 0.38);
-
-  const prevTitle = pdfDoc.getTitle();
-  pdfDoc.setTitle(
-    prevTitle
-      ? `${prevTitle} — Licensed to ${buyerEmail}`
-      : `Licensed to ${buyerEmail}`
-  );
-  pdfDoc.setAuthor(buyerEmail);
-  pdfDoc.setSubject(
-    `Creator Guard licensed copy. Policy intent: disallow modification and content copying (enforce via encryption where available). Buyer: ${buyerEmail}.`
-  );
-  pdfDoc.setKeywords([
-    pipeFingerprint,
-    `CreatorGuard:BuyerEmail=${buyerEmail}`,
-    `CreatorGuard:UserId=${userId}`,
-    `CreatorGuard:PolicyIntent=NoModify_NoContentCopy`,
-    `CreatorGuard:Version=PDF-V1.0-STABLE`,
-  ]);
-  pdfDoc.setCreator("Creator Guard");
-  pdfDoc.setProducer(
-    `Creator Guard PDF-V1.0-STABLE | Licensed: ${buyerEmail} | UserId: ${userId}`
-  );
-  pdfDoc.setModificationDate(new Date());
-
-  for (const page of pdfDoc.getPages()) {
-    const { width } = page.getSize();
-    const textWidth = font.widthOfTextAtSize(watermark, fontSize);
-    const x = Math.max(28, (width - textWidth) / 2);
-    page.drawText(watermark, {
-      x,
-      y: 20,
-      size: fontSize,
-      font,
-      color: footerGray,
-      opacity: 0.4,
-    });
-  }
-
-  return pdfDoc.save({ useObjectStreams: false });
 }
 
 export class CreatorGuardPdfError extends Error {
@@ -95,13 +51,13 @@ export class CreatorGuardPdfError extends Error {
   }
 }
 
-function normalizeBuyerEmail(raw: string): string {
-  const s = raw.trim().slice(0, EMAIL_MAX);
-  if (s.length < 3) {
-    throw new CreatorGuardPdfError("invalid_email", "Enter a valid buyer email.");
-  }
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s)) {
-    throw new CreatorGuardPdfError("invalid_email", "Enter a valid buyer email.");
+function normalizeMemberIdentity(raw: string): string {
+  const s = raw.trim().slice(0, MEMBER_IDENTITY_MAX_LEN);
+  if (!isValidMemberIdentityToken(s)) {
+    throw new CreatorGuardPdfError(
+      "invalid_member_identity",
+      "Enter a valid member identity (1–64 characters, printable text only)."
+    );
   }
   return s;
 }

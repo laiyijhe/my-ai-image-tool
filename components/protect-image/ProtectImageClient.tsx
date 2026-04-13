@@ -1,5 +1,6 @@
 "use client";
 
+import { isValidMemberIdentityToken } from "@/lib/member-identity";
 import { useLanguage } from "@/lib/i18n/language-context";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useDropzone } from "react-dropzone";
@@ -69,6 +70,10 @@ export default function ProtectImageClient() {
     }
     if (!text) {
       setError(t.quickTestNeedMember);
+      return;
+    }
+    if (!isValidMemberIdentityToken(text)) {
+      setError(t.quickTestInvalidMemberId);
       return;
     }
 

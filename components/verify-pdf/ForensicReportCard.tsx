@@ -122,7 +122,7 @@ export const ForensicReportCard = forwardRef<
           </h3>
           <dl className="space-y-3 text-xs">
             <div>
-              <dt className="text-red-300/80">{t.verifyPdfBuyerEmail}</dt>
+              <dt className="text-red-300/80">{t.verifyPdfMemberIdentity}</dt>
               <dd className="forensic-email-highlight mt-1 inline-block max-w-full rounded border border-red-500/40 bg-red-950/60 px-2 py-1.5 font-mono text-sm font-semibold text-red-50 break-all">
                 {buyerEmail}
               </dd>

@@ -3,6 +3,8 @@ export const CG_HISTORY_KEY = "cg_history";
 export type CgBatchHistoryEntry = {
   emails: string[];
   at: string;
+  /** Selected portal / protect group id when the batch ran (UUID or sentinel). */
+  groupId?: string;
 };
 
 function normalizeKey(emails: string[]): string {
@@ -23,7 +25,11 @@ export function loadCgBatchHistory(): CgBatchHistoryEntry[] {
       if (!Array.isArray(o.emails) || typeof o.at !== "string") continue;
       const emails = o.emails.filter((e): e is string => typeof e === "string");
       if (emails.length === 0) continue;
-      out.push({ emails, at: o.at });
+      const groupId =
+        typeof o.groupId === "string" && o.groupId.length > 0
+          ? o.groupId
+          : undefined;
+      out.push({ emails, at: o.at, ...(groupId ? { groupId } : {}) });
     }
     return out;
   } catch {
@@ -41,15 +47,24 @@ export function saveCgBatchHistory(entries: CgBatchHistoryEntry[]): void {
 }
 
 /** Prepend this batch; de-dupe prior rows with the same email set; cap length. */
-export function appendCgBatchHistory(emails: string[]): CgBatchHistoryEntry[] {
+export function appendCgBatchHistory(
+  emails: string[],
+  groupId?: string | null
+): CgBatchHistoryEntry[] {
   if (emails.length === 0) return loadCgBatchHistory();
   const key = normalizeKey(emails);
   const prev = loadCgBatchHistory();
   const filtered = prev.filter(
     (e) => normalizeKey(e.emails) !== key
   );
+  const gid =
+    typeof groupId === "string" && groupId.length > 0 ? groupId : undefined;
   const next: CgBatchHistoryEntry[] = [
-    { emails: [...emails], at: new Date().toISOString() },
+    {
+      emails: [...emails],
+      at: new Date().toISOString(),
+      ...(gid ? { groupId: gid } : {}),
+    },
     ...filtered,
   ].slice(0, 50);
   saveCgBatchHistory(next);

@@ -1,10 +1,32 @@
 @import "tailwindcss";
 
 @theme {
-  --font-sans: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
+  --font-sans: var(--font-plus-jakarta), ui-sans-serif, system-ui, sans-serif;
+  /*
+   * Canva Light Theme (V7.3+):
+   * - Page shell: `bg-canvas` / `--color-canvas` (#fff)
+   * - Primary actions / brand: `bg-of-500` etc. → #00AFF0 (OnlyFans blue)
+   * - Body text: `text-ink` / slate-900
+   */
+  --color-of-400: #33c4f5;
+  --color-of-500: #00aff0;
+  --color-of-600: #0090c9;
+  --color-of-700: #0077a8;
+  --color-canvas: #ffffff;
+  --color-canvas-subtle: #f8fafc;
+  --color-ink: #0f172a;
+  --color-ink-muted: #64748b;
 }
 
 @layer base {
+  :root {
+    color-scheme: light;
+  }
+
+  html {
+    color-scheme: light;
+  }
+
   h1,
   h2,
   h3 {

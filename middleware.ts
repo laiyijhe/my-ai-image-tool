@@ -53,6 +53,12 @@ export function middleware(request: NextRequest) {
     return NextResponse.rewrite(url);
   }
 
+  if (pathname === "/success" || pathname === "/success/") {
+    const url = request.nextUrl.clone();
+    url.pathname = `/${DEFAULT_LOCALE}/success`;
+    return NextResponse.rewrite(url);
+  }
+
   return NextResponse.next();
 }
 
@@ -72,5 +78,7 @@ export const config = {
     "/verify/",
     "/portal",
     "/portal/",
+    "/success",
+    "/success/",
   ],
 };

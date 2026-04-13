@@ -4,12 +4,15 @@
  * Member portal, global ID, and mass image delivery — mounted at `/[lang]/portal`.
  */
 
-import { LanguageSelector } from "@/components/LanguageSelector";
+import { Navbar } from "@/components/navigation/Navbar";
 import { isLocale, linksReadyManyTemplate } from "@/lib/i18n/dictionary";
 import { useLanguage } from "@/lib/i18n/language-context";
 import type { Locale, Messages } from "@/lib/i18n/types";
+import { isValidMemberIdentityToken } from "@/lib/member-identity";
+import { LayoutGroup, motion } from "framer-motion";
 import Link from "next/link";
 import { useParams } from "next/navigation";
+import type { DragEvent } from "react";
 import {
   startTransition,
   useCallback,
@@ -28,6 +31,30 @@ type MassRow = {
   previewUrl: string;
   path: string;
 };
+
+type PortalMember = {
+  id: string;
+  name: string;
+  /** Mock group: null = unassigned, "vip" | "standard" = preset buckets */
+  groupId: string | null;
+};
+
+const PORTAL_MOCK_GROUP_IDS = ["vip", "standard"] as const;
+
+function newPortalMemberId(): string {
+  try {
+    if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
+      return crypto.randomUUID();
+    }
+  } catch {
+    /* ignore */
+  }
+  return `m-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function filterValidMemberNames(names: string[]): string[] {
+  return names.filter(isValidMemberIdentityToken);
+}
 
 type GalleryItem = { file: File; previewUrl: string };
 
@@ -182,6 +209,23 @@ function CheckIcon({ className }: { className?: string }) {
   );
 }
 
+function DraggablePortalMemberCard({ member }: { member: PortalMember }) {
+  return (
+    <motion.div layout layoutId={member.id} className="w-full">
+      <div
+        draggable
+        onDragStart={(e: DragEvent<HTMLDivElement>) => {
+          e.dataTransfer.setData("application/x-portal-member", member.id);
+          e.dataTransfer.effectAllowed = "move";
+        }}
+        className="cursor-grab rounded-xl border border-white/10 bg-white/[0.06] px-3 py-2 text-sm text-slate-100 shadow-sm transition hover:border-cyan-500/25 active:cursor-grabbing"
+      >
+        {member.name}
+      </div>
+    </motion.div>
+  );
+}
+
 /** Minimal dark glass panel — Apple-like weight. */
 const GLASS_PANEL =
   "rounded-[1.75rem] border border-white/[0.06] bg-white/[0.035] shadow-[0_12px_48px_rgba(0,0,0,0.5)] backdrop-blur-2xl";
@@ -260,6 +304,10 @@ export default function PortalDashboard() {
   const [dragOver, setDragOver] = useState(false);
   const [massDragOver, setMassDragOver] = useState(false);
   const [uploadLabel, setUploadLabel] = useState<string | null>(null);
+  const [portalMembers, setPortalMembers] = useState<PortalMember[]>([]);
+  const [portalDropHighlight, setPortalDropHighlight] = useState<
+    string | null
+  >(null);
 
   const [toast, setToast] = useState<ToastPayload | null>(null);
   const toastTimerRef = useRef<number | null>(null);
@@ -327,6 +375,25 @@ export default function PortalDashboard() {
     []
   );
 
+  const assignPortalMemberToGroup = useCallback(
+    (memberId: string, groupId: string | null) => {
+      setPortalMembers((prev) =>
+        prev.map((m) => (m.id === memberId ? { ...m, groupId } : m))
+      );
+      const groupLabel =
+        groupId === null
+          ? t.portalGroupUnassigned
+          : groupId === "vip"
+            ? t.portalMockGroupVip
+            : t.portalMockGroupStandard;
+      pushToast(
+        replaceTpl(t.portalMemberMovedToast, { group: groupLabel }),
+        "success"
+      );
+    },
+    [pushToast, t]
+  );
+
   useEffect(() => {
     return () => {
       if (toastTimerRef.current) window.clearTimeout(toastTimerRef.current);
@@ -381,7 +448,7 @@ export default function PortalDashboard() {
   );
 
   const generateEverything = useCallback(() => {
-    const names = parseMemberListFromText(input);
+    const names = filterValidMemberNames(parseMemberListFromText(input));
     if (names.length === 0) {
       pushToast(t.needMembersHint, "error");
       return;
@@ -393,6 +460,13 @@ export default function PortalDashboard() {
     }
     setMassRows([]);
     setMassPhase("idle");
+    setPortalMembers(
+      names.map((name) => ({
+        id: newPortalMemberId(),
+        name,
+        groupId: null,
+      }))
+    );
     setRows(
       names.map((name) => ({
         name,
@@ -402,7 +476,7 @@ export default function PortalDashboard() {
   }, [creatorIdInput, input, pushToast, t.needMembersHint]);
 
   const generateMassBatches = useCallback(async () => {
-    const names = parseMemberListFromText(input);
+    const names = filterValidMemberNames(parseMemberListFromText(input));
     if (names.length === 0) {
       pushToast(t.needMembersHint, "error");
       return;
@@ -413,6 +487,13 @@ export default function PortalDashboard() {
     }
 
     setRows([]);
+    setPortalMembers(
+      names.map((name) => ({
+        id: newPortalMemberId(),
+        name,
+        groupId: null,
+      }))
+    );
     setMassRows([]);
     setMassPhase("uploading");
     setMassProgress({ done: 0, total: galleryItems.length });
@@ -483,23 +564,30 @@ export default function PortalDashboard() {
       <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_80%_50%_at_50%_-20%,rgba(34,211,238,0.12),transparent)]" />
 
       <div className="relative mx-auto max-w-2xl px-4 pb-20 pt-8 sm:px-6 sm:pt-12">
-        <div className="mb-8 flex justify-end">
-          <LanguageSelector />
-        </div>
-
+        <Navbar lang={lang} surface="light" />
         <header className="mb-10 border-b border-white/[0.06] pb-8">
-          <Link
-            href={lp}
-            className="text-sm text-slate-400 underline-offset-4 hover:text-slate-200 hover:underline"
-          >
-            {t.portalBackHome}
-          </Link>
-          <h1 className="mt-4 text-2xl font-semibold tracking-tight text-white sm:text-3xl">
-            {t.portalWorkspaceTitle}
-          </h1>
-          <p className="mt-2 max-w-xl text-sm text-slate-500">
-            {t.portalWorkspaceSubtitle}
-          </p>
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+              <Link
+                href={lp}
+                className="text-sm text-slate-400 underline-offset-4 hover:text-slate-200 hover:underline"
+              >
+                {t.portalBackHome}
+              </Link>
+              <Link
+                href={`${lp}/verify`}
+                className="text-xs font-medium text-slate-500 underline-offset-4 transition hover:text-slate-400 hover:underline sm:text-sm"
+              >
+                {t.portalJumpToVerify}
+              </Link>
+            </div>
+            <h1 className="mt-4 text-2xl font-semibold tracking-tight text-white sm:text-3xl">
+              {t.portalWorkspaceTitle}
+            </h1>
+            <p className="mt-2 max-w-xl text-sm text-slate-500">
+              {t.portalWorkspaceSubtitle}
+            </p>
+          </div>
         </header>
 
         <div className="space-y-6">
@@ -640,6 +728,91 @@ export default function PortalDashboard() {
             >
               {t.generateAllCta}
             </button>
+
+            {portalMembers.length > 0 ? (
+              <div className="mt-8 border-t border-white/[0.06] pt-8">
+                <h2 className="text-sm font-semibold tracking-tight text-white">
+                  {t.portalOrganizeTitle}
+                </h2>
+                <p className="mt-1 text-xs leading-relaxed text-slate-500">
+                  {t.portalOrganizeHint}
+                </p>
+                <LayoutGroup id="portal-member-groups">
+                  <div className="mt-4 grid gap-3 sm:grid-cols-3">
+                    <div
+                      onDragOver={(e) => {
+                        e.preventDefault();
+                        setPortalDropHighlight("unassigned");
+                      }}
+                      onDragLeave={() => setPortalDropHighlight(null)}
+                      onDrop={(e) => {
+                        e.preventDefault();
+                        setPortalDropHighlight(null);
+                        const id = e.dataTransfer.getData(
+                          "application/x-portal-member"
+                        );
+                        if (id) assignPortalMemberToGroup(id, null);
+                      }}
+                      className={`min-h-[8.5rem] rounded-2xl border border-dashed p-3 transition-colors ${
+                        portalDropHighlight === "unassigned"
+                          ? "border-cyan-400/55 bg-cyan-500/10"
+                          : "border-white/10 bg-black/25"
+                      }`}
+                    >
+                      <p className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+                        {t.portalGroupUnassigned}
+                      </p>
+                      <div className="flex flex-col gap-2">
+                        {portalMembers
+                          .filter((m) => m.groupId === null)
+                          .map((m) => (
+                            <DraggablePortalMemberCard key={m.id} member={m} />
+                          ))}
+                      </div>
+                    </div>
+                    {PORTAL_MOCK_GROUP_IDS.map((gid) => (
+                      <div
+                        key={gid}
+                        onDragOver={(e) => {
+                          e.preventDefault();
+                          setPortalDropHighlight(gid);
+                        }}
+                        onDragLeave={() => setPortalDropHighlight(null)}
+                        onDrop={(e) => {
+                          e.preventDefault();
+                          setPortalDropHighlight(null);
+                          const id = e.dataTransfer.getData(
+                            "application/x-portal-member"
+                          );
+                          if (id) assignPortalMemberToGroup(id, gid);
+                        }}
+                        className={`min-h-[8.5rem] rounded-2xl border border-dashed p-3 transition-colors ${
+                          portalDropHighlight === gid
+                            ? "border-emerald-400/55 bg-emerald-500/10"
+                            : "border-white/10 bg-black/25"
+                        }`}
+                      >
+                        <p className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+                          {gid === "vip"
+                            ? t.portalMockGroupVip
+                            : t.portalMockGroupStandard}
+                        </p>
+                        <div className="flex flex-col gap-2">
+                          {portalMembers
+                            .filter((m) => m.groupId === gid)
+                            .map((m) => (
+                              <DraggablePortalMemberCard
+                                key={m.id}
+                                member={m}
+                              />
+                            ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </LayoutGroup>
+              </div>
+            ) : null}
           </section>
 
           {/* Mass protection gallery */}
@@ -951,13 +1124,13 @@ export default function PortalDashboard() {
         <footer className="mt-14 flex flex-wrap items-center justify-center gap-x-6 gap-y-3 border-t border-white/[0.06] pt-10 text-center">
           <Link
             href={`${lp}/protect/pdf`}
-            className="text-sm font-medium text-cyan-400/80 transition hover:text-cyan-300"
+            className="text-sm font-medium text-slate-400 transition hover:text-slate-300"
           >
-            {t.homeCtaStartProtecting}
+            {t.homeHeroCtaPdfProtect}
           </Link>
           <Link
             href={`${lp}/verify`}
-            className="text-sm font-medium text-cyan-400/80 transition hover:text-cyan-300"
+            className="text-xs font-medium text-slate-500 transition hover:text-slate-400 sm:text-sm"
           >
             {t.homeCtaVerifyEvidence}
           </Link>

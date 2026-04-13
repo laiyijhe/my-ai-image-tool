@@ -31,7 +31,7 @@ test.describe("PDF protect page", () => {
 
     await page.goto(`${origin}/protect/pdf`, { waitUntil: "load" });
 
-    await page.locator("#email-list").fill("test@creatorguard.com");
+    await page.locator("#member-identity-list").fill("test@creatorguard.com");
 
     const pdfPath = path.join(process.cwd(), "public", "test.pdf");
     const fileInput = page.locator('input[type="file"]').first();

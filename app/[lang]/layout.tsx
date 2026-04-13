@@ -1,4 +1,5 @@
 import { LangFromSegment } from "@/components/LangFromSegment";
+import { SiteFooter } from "@/components/navigation/SiteFooter";
 import { isLocale } from "@/lib/i18n/dictionary";
 import type { Locale } from "@/lib/i18n/types";
 import { notFound } from "next/navigation";
@@ -20,7 +21,10 @@ export default async function LangLayout({
   return (
     <>
       <LangFromSegment locale={locale} />
-      {children}
+      <div className="flex min-h-screen flex-col">
+        <div className="flex flex-1 flex-col">{children}</div>
+        <SiteFooter lang={locale} />
+      </div>
     </>
   );
 }

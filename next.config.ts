@@ -7,6 +7,10 @@ import type { NextConfig } from "next";
  */
 const nextConfig: NextConfig = {
   serverExternalPackages: ["sharp"],
+  /** Expose Facebook App ID to the client (public OAuth value) from AUTH_FACEBOOK_ID for UI / QA hooks. */
+  env: {
+    NEXT_PUBLIC_AUTH_FACEBOOK_APP_ID: process.env.AUTH_FACEBOOK_ID ?? "",
+  },
 };
 
 export default nextConfig;

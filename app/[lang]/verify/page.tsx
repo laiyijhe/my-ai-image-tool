@@ -446,6 +446,9 @@ export default function VerifyPage() {
             <p className="text-sm text-emerald-100/95">
               {t.verifyUniversalPdfFoundHint}
             </p>
+            <p className="mt-1 text-[10px] font-semibold uppercase tracking-wider text-emerald-500/80">
+              {t.verifyPdfMemberIdentity}
+            </p>
             <p className="mt-2 break-all font-mono text-lg font-semibold text-emerald-200">
               {pdfResult.buyerEmail}
             </p>
